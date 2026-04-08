@@ -9,6 +9,7 @@ venv/
 node_modules/
 .next/
 *.log
+logs/
 
 # Локальные SQLite / дампы (основная БД — PostgreSQL на сервере)
 databases/
