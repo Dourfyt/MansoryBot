@@ -162,10 +162,15 @@ def _anonymous_message_body(message: Message) -> str:
         return "[голосовое]"
     if message.video:
         return "[видео]"
+    if message.pinned_message is not None:
+        return _anonymous_history_line(message)
     return "[сообщение]"
 
 
 def _anonymous_history_line(message: Message) -> str:
+    if message.pinned_message is not None:
+        inner = _anonymous_history_line(message.pinned_message)
+        return f"Закрепил: {inner}"[:8000]
     if message.text:
         return message.text.strip()[:8000]
     if message.photo:
@@ -392,6 +397,13 @@ async def _relay_anonymous_to_peers(message: Message, nick: str, room_id: int) -
                     peer_id,
                     format_relay_line(nick, message.text.strip()),
                     rid,
+                )
+                await _rec(peer_id, sm.message_id)
+                out.append((peer_id, sm.message_id))
+            elif message.pinned_message is not None:
+                body = _anonymous_history_line(message)
+                sm = await _relay_send_message(
+                    tg_bot, peer_id, format_relay_line(nick, body), rid
                 )
                 await _rec(peer_id, sm.message_id)
                 out.append((peer_id, sm.message_id))
