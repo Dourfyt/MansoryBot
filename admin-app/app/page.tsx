@@ -603,6 +603,21 @@ export default function AdminPanel() {
                   className={`h-6 w-6 ${headerRefreshing ? 'animate-spin' : ''}`}
                 />
               </button>
+              {(panelRole === 'admin' || panelRole === 'support') && (
+                <NextLink
+                  href="/support"
+                  className="relative p-2.5 rounded-lg text-gray-200 hover:text-white hover:bg-white/10 border border-border transition-colors"
+                  aria-label="Поддержка (тикеты)"
+                  title="Поддержка (тикеты)"
+                >
+                  <Headphones className="h-6 w-6" />
+                  {supportUnreadTotal > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 min-w-[1.125rem] h-[1.125rem] px-0.5 flex items-center justify-center rounded-full bg-cyan-500 text-[10px] font-bold leading-none text-gray-950">
+                      {supportUnreadTotal > 99 ? '99+' : supportUnreadTotal}
+                    </span>
+                  )}
+                </NextLink>
+              )}
               <button
                 type="button"
                 onClick={() => setMenuOpen(true)}
@@ -881,19 +896,6 @@ export default function AdminPanel() {
               <span>Приветствие и ссылки</span>
             </button>
           )}
-          <NextLink
-            href="/support"
-            onClick={() => setMenuOpen(false)}
-            className="flex items-center gap-3 w-full px-3 py-3 rounded-lg text-gray-200 hover:bg-white/10 transition-colors relative"
-          >
-            <Headphones className="h-5 w-5 text-cyan-300 shrink-0" />
-            <span>Поддержка (тикеты)</span>
-            {supportUnreadTotal > 0 && (
-              <span className="ml-auto min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center rounded-full bg-cyan-500 text-[11px] font-bold text-gray-950">
-                {supportUnreadTotal > 99 ? '99+' : supportUnreadTotal}
-              </span>
-            )}
-          </NextLink>
           {isAdmin && (
             <NextLink
               href="/admin/chats"

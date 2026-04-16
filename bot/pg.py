@@ -5,7 +5,7 @@ import logging
 import os
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator, List
+from typing import Generator, List, Optional, Tuple
 
 try:
     from dotenv import load_dotenv
@@ -361,6 +361,18 @@ def init_schema() -> None:
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS rekvizit_outbound_messages (
+            id SERIAL PRIMARY KEY,
+            verifier_group_id BIGINT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('client_group', 'anon_dm')),
+            chat_id BIGINT NOT NULL,
+            message_id BIGINT NOT NULL,
+            anonymous_room_id BIGINT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_rekvizit_out_verifier ON rekvizit_outbound_messages(verifier_group_id)",
+        """
         CREATE TABLE IF NOT EXISTS group_settings (
             chat_id BIGINT PRIMARY KEY,
             trader_rate DOUBLE PRECISION DEFAULT 10,
@@ -561,7 +573,82 @@ def migrate_telegram_chat_id(old_id: int, new_id: int) -> None:
             "UPDATE anonymous_chats SET verifier_group_id = %s WHERE verifier_group_id = %s",
             (new_id, old_id),
         )
+        cur.execute(
+            "UPDATE rekvizit_outbound_messages SET verifier_group_id = %s WHERE verifier_group_id = %s",
+            (new_id, old_id),
+        )
+        cur.execute(
+            """
+            UPDATE rekvizit_outbound_messages SET chat_id = %s
+            WHERE chat_id = %s AND kind = 'client_group'
+            """,
+            (new_id, old_id),
+        )
     logger.info("Telegram chat_id migrated in DB: %s -> %s", old_id, new_id)
+
+
+REKVIZIT_KIND_CLIENT_GROUP = "client_group"
+REKVIZIT_KIND_ANON_DM = "anon_dm"
+
+
+def clear_rekvizit_outbound_for_verifier(verifier_group_id: int) -> None:
+    with connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM rekvizit_outbound_messages WHERE verifier_group_id = %s",
+            (verifier_group_id,),
+        )
+
+
+def add_rekvizit_outbound(
+    verifier_group_id: int,
+    kind: str,
+    chat_id: int,
+    message_id: int,
+    anonymous_room_id: Optional[int] = None,
+) -> None:
+    with connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO rekvizit_outbound_messages
+                (verifier_group_id, kind, chat_id, message_id, anonymous_room_id)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (verifier_group_id, kind, chat_id, message_id, anonymous_room_id),
+        )
+
+
+def list_rekvizit_outbound_for_verifier(
+    verifier_group_id: int,
+) -> List[Tuple[int, str, int, int, Optional[int]]]:
+    """Строки: id, kind, chat_id (группа или user id в ЛС), message_id, anonymous_room_id."""
+    with connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, kind, chat_id, message_id, anonymous_room_id
+            FROM rekvizit_outbound_messages
+            WHERE verifier_group_id = %s
+            ORDER BY id
+            """,
+            (verifier_group_id,),
+        )
+        out: List[Tuple[int, str, int, int, Optional[int]]] = []
+        for r in cur.fetchall():
+            rid = int(r[0])
+            kind = str(r[1])
+            chat_id = int(r[2])
+            mid = int(r[3])
+            room = int(r[4]) if r[4] is not None else None
+            out.append((rid, kind, chat_id, mid, room))
+        return out
+
+
+def delete_rekvizit_outbound_row(row_id: int) -> None:
+    with connection() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM rekvizit_outbound_messages WHERE id = %s", (row_id,))
 
 
 def upsert_admin_chat_invite_link(chat_id: int, invite_link: str) -> None:
