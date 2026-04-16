@@ -11,7 +11,7 @@ import html as html_lib
 import os
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.utils.formatting import CustomEmoji, Text
+from aiogram.utils.formatting import Bold, CustomEmoji, Text
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 import locale
@@ -141,13 +141,7 @@ class RateStates(StatesGroup):
     waiting_for_rate_update = State()
 
 
-class RekStates(StatesGroup):
-    """Пошаговый ввод реквизитов (/рек) в группе проверяющих."""
-
-    waiting_bank = State()
-    waiting_fio = State()
-    waiting_card = State()
-    waiting_phone = State()
+_REK_CMD_PREFIX = re.compile(r"^/\s*рек(?:@[\w_]+)?\s*", re.IGNORECASE)
 
 
 def _rek_normalize_card_digits(text: str) -> Optional[str]:
@@ -171,7 +165,25 @@ def _rek_normalize_phone(text: str) -> Optional[str]:
     return raw
 
 
-STOP_REK_HTML = "<b>Внимание:</b> по этим реквизитам сейчас не переводите деньги."
+def _parse_rek_one_message_text(raw: str) -> Optional[Tuple[str, str, str, str]]:
+    """
+    Одно сообщение /рек: банк, ФИО (одна или несколько строк), карта (16 цифр), телефон — последние две строки.
+    """
+    body = _REK_CMD_PREFIX.sub("", (raw or "").strip())
+    lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+    if len(lines) < 4:
+        return None
+    phone = _rek_normalize_phone(lines[-1])
+    card16 = _rek_normalize_card_digits(lines[-2])
+    if not phone or not card16:
+        return None
+    bank = lines[0]
+    if not bank or len(bank) > 500:
+        return None
+    fio = " ".join(lines[1:-2]).strip()
+    if not fio or len(fio) > 500:
+        return None
+    return bank, fio, card16, phone
 
 
 async def broadcast_rekvizit_to_linked_chats(
@@ -282,9 +294,7 @@ async def broadcast_stop_rek_replies(verifier_group_id: int) -> Tuple[int, int]:
 
     for row_id, cid, mid in client_rows:
         try:
-            await bot.send_message(
-                cid, STOP_REK_HTML, parse_mode="HTML", reply_to_message_id=mid
-            )
+            await bot.send_message(cid, reply_to_message_id=mid, **stop_rek_broadcast_kwargs())
             ok += 1
             delete_rekvizit_outbound_row(row_id)
         except Exception:
@@ -305,9 +315,8 @@ async def broadcast_stop_rek_replies(verifier_group_id: int) -> Tuple[int, int]:
                 try:
                     await send_bot.send_message(
                         uid,
-                        STOP_REK_HTML,
-                        parse_mode="HTML",
                         reply_to_message_id=mid,
+                        **stop_rek_broadcast_kwargs(),
                     )
                     ok += 1
                     delete_rekvizit_outbound_row(row_id)
@@ -386,6 +395,17 @@ FAKE_RECEIPT_CUSTOM_EMOJI_ID = "5805597488316419570"  # «Фейк/Нету» н
 CROSS_CUSTOM_EMOJI_ID = "5397841719960022238"
 # Успешное сообщение о фиксации выплаты (/выплата, Tron)
 PAYOUT_OK_CUSTOM_EMOJI_ID = "5350452584119279096"
+# /стопрек: «СТОП» + кастомный знак стоп в тексте предупреждения
+STOP_REK_CUSTOM_EMOJI_ID = "5260293700088511294"
+
+
+def stop_rek_broadcast_kwargs() -> dict:
+    """Предупреждение /стопрек для send_message(**kwargs, reply_to_message_id=...)."""
+    return Text(
+        Bold("СТОП"),
+        CustomEmoji("\u26d4", custom_emoji_id=STOP_REK_CUSTOM_EMOJI_ID),
+        Bold(": по этим реквизитам сейчас не переводите деньги."),
+    ).as_kwargs()
 
 
 def _msg_with_custom_prefix(placeholder: str, emoji_id: str, body: str) -> dict:
@@ -1839,7 +1859,7 @@ async def cmd_start_connected_group(message: Message):
             "Доступные команды:\n"
             "• Кнопки «Подтвердить» и «Фейк/Нету» под фото чека (после ввода суммы подпись «Проверено» и кнопка с галочкой)\n"
             "• /чек <сумма> - добавить чек с указанной суммой\n"
-            "• /рек — реквизиты в клиентские группы\n"
+            "• /рек — реквизиты одним сообщением (банк, ФИО, карта, телефон — строками под командой)\n"
             "• /стопрек — предупредить об остановке приема платежей по реквизитам\n\n"
         )
 
@@ -2506,17 +2526,47 @@ def check_wallet_address_in_transaction(data: dict, wallet_address: Optional[str
 
 
 @router.message(Command("рек"), VerifierGroupOrAnonymousLinkedFilter())
-async def cmd_rek_start(message: Message, state: FSMContext):
-    """Старт пошагового ввода реквизитов в группе проверяющих."""
-    if not message.chat:
+async def cmd_rek(message: Message):
+    """Реквизиты в клиентские группы и анонимные ЛС — одним сообщением (несколько строк под /рек)."""
+    if not message.chat or not message.text:
         return
-    await state.set_state(RekStates.waiting_bank)
-    await state.update_data(rek_verifier_group_id=message.chat.id)
-    await message.answer(
-        "Введите <b>название банка</b> одной строкой.\n\n"
-        "Отмена: /cancel",
-        parse_mode="HTML",
-    )
+    parsed = _parse_rek_one_message_text(message.text)
+    if not parsed:
+        await message.answer(
+            "Отправьте реквизиты <b>одним сообщением</b> сразу после <code>/рек</code> — каждое поле с новой строки:\n\n"
+            "<b>1</b> — банк\n"
+            "<b>2</b> — ФИО (можно несколько строк подряд)\n"
+            "<b>3</b> — номер карты (16 цифр, можно с пробелами)\n"
+            "<b>4</b> — телефон (10–15 цифр)\n\n"
+            "Пример:\n"
+            "<pre>/рек\n"
+            "Сбербанк\n"
+            "Иванов Иван Иванович\n"
+            "1234 5678 9012 3456\n"
+            "+7 900 123-45-67</pre>",
+            parse_mode="HTML",
+        )
+        return
+    bank, fio, card16, phone = parsed
+    vgid = message.chat.id
+    await message.answer("Рассылаю реквизиты…")
+    try:
+        stats = await broadcast_rekvizit_to_linked_chats(vgid, bank, fio, card16, phone)
+    except Exception as e:
+        logging.exception("Ошибка рассылки /рек")
+        await message.answer(**msg_err(f"Ошибка рассылки: {e}"))
+        return
+    if (
+        stats["client_sent"] + stats["anon_sent"] == 0
+        and stats["client_failed"] + stats["anon_failed"] == 0
+    ):
+        await message.answer(
+            **msg_ok(
+                "Некуда отправить: нет привязанных клиентских групп и участников анонимных комнат."
+            )
+        )
+    else:
+        await message.answer(**msg_ok("Реквизиты отправлены."))
 
 
 @router.message(Command("стопрек"), VerifierGroupOrAnonymousLinkedFilter())
@@ -2550,126 +2600,9 @@ async def cmd_stop_rek(message: Message):
         await message.answer(**msg_ok("Готово."))
 
 
-@router.message(
-    Command("cancel"),
-    StateFilter(RekStates),
-    F.chat.type.in_({"group", "supergroup"}),
-)
-async def cmd_rek_cancel(message: Message, state: FSMContext):
-    data = await state.get_data()
-    if data.get("rek_verifier_group_id") != message.chat.id:
-        return
-    await state.clear()
-    await message.answer("Заполнение реквизитов отменено.")
-
-
-@router.message(RekStates.waiting_bank, F.text, F.chat.type.in_({"group", "supergroup"}))
-async def rek_step_bank(message: Message, state: FSMContext):
-    data = await state.get_data()
-    if message.chat.id != data.get("rek_verifier_group_id"):
-        return
-    if (message.text or "").strip().startswith("/"):
-        await message.answer("Сначала завершите ввод или отправьте /cancel.")
-        return
-    bank = (message.text or "").strip()
-    if not bank or len(bank) > 500:
-        await message.answer(**msg_err("Введите название банка (не пусто, до 500 символов)."))
-        return
-    await state.update_data(rek_bank=bank)
-    await state.set_state(RekStates.waiting_fio)
-    await message.answer(
-        "Введите <b>ФИО</b> получателя одной строкой.\n\nОтмена: /cancel",
-        parse_mode="HTML",
-    )
-
-
-@router.message(RekStates.waiting_fio, F.text, F.chat.type.in_({"group", "supergroup"}))
-async def rek_step_fio(message: Message, state: FSMContext):
-    data = await state.get_data()
-    if message.chat.id != data.get("rek_verifier_group_id"):
-        return
-    if (message.text or "").strip().startswith("/"):
-        await message.answer("Сначала завершите ввод или отправьте /cancel.")
-        return
-    fio = (message.text or "").strip()
-    if not fio or len(fio) > 500:
-        await message.answer(**msg_err("Введите ФИО (не пусто, до 500 символов)."))
-        return
-    await state.update_data(rek_fio=fio)
-    await state.set_state(RekStates.waiting_card)
-    await message.answer(
-        "Введите <b>номер карты</b> (16 цифр, можно с пробелами).\n\nОтмена: /cancel",
-        parse_mode="HTML",
-    )
-
-
-@router.message(RekStates.waiting_card, F.text, F.chat.type.in_({"group", "supergroup"}))
-async def rek_step_card(message: Message, state: FSMContext):
-    data = await state.get_data()
-    if message.chat.id != data.get("rek_verifier_group_id"):
-        return
-    if (message.text or "").strip().startswith("/"):
-        await message.answer("Сначала завершите ввод или отправьте /cancel.")
-        return
-    card16 = _rek_normalize_card_digits(message.text or "")
-    if not card16:
-        await message.answer(
-            **msg_err("Нужны ровно 16 цифр номера карты (можно вводить с пробелами).")
-        )
-        return
-    await state.update_data(rek_card16=card16)
-    await state.set_state(RekStates.waiting_phone)
-    await message.answer(
-        "Введите <b>номер телефона</b> (минимум 10 цифр).\n\nОтмена: /cancel",
-        parse_mode="HTML",
-    )
-
-
-@router.message(RekStates.waiting_phone, F.text, F.chat.type.in_({"group", "supergroup"}))
-async def rek_step_phone(message: Message, state: FSMContext):
-    data = await state.get_data()
-    if message.chat.id != data.get("rek_verifier_group_id"):
-        return
-    if (message.text or "").strip().startswith("/"):
-        await message.answer("Сначала завершите ввод или отправьте /cancel.")
-        return
-    phone = _rek_normalize_phone(message.text or "")
-    if not phone:
-        await message.answer(
-            **msg_err("Некорректный телефон: нужно от 10 до 15 цифр (можно с +, скобками, пробелами).")
-        )
-        return
-    vgid = int(data["rek_verifier_group_id"])
-    bank = str(data.get("rek_bank") or "")
-    fio = str(data.get("rek_fio") or "")
-    card16 = str(data.get("rek_card16") or "")
-    await state.clear()
-    await message.answer("Рассылаю реквизиты…")
-    try:
-        stats = await broadcast_rekvizit_to_linked_chats(vgid, bank, fio, card16, phone)
-    except Exception as e:
-        logging.exception("Ошибка рассылки /рек")
-        await message.answer(**msg_err(f"Ошибка рассылки: {e}"))
-        return
-    if (
-        stats["client_sent"] + stats["anon_sent"] == 0
-        and stats["client_failed"] + stats["anon_failed"] == 0
-    ):
-        await message.answer(
-            **msg_ok(
-                "Некуда отправить: нет привязанных клиентских групп и участников анонимных комнат."
-            )
-        )
-    else:
-        await message.answer(**msg_ok("Реквизиты отправлены."))
-
-
 @router.message(F.text, F.chat.type.in_({"group", "supergroup"}))
-async def handle_tron_links(message: Message, state: FSMContext):
+async def handle_tron_links(message: Message):
     """Ссылки TronScan и хеши транзакций — только в группах (не в ЛС: там тикеты поддержки)."""
-    st = await state.get_state()
-    if st is not None and str(st).startswith("RekStates:"):
-        return
     if not message.text:
         return
     
