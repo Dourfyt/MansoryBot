@@ -1859,7 +1859,7 @@ async def cmd_start_connected_group(message: Message):
             "Доступные команды:\n"
             "• Кнопки «Подтвердить» и «Фейк/Нету» под фото чека (после ввода суммы подпись «Проверено» и кнопка с галочкой)\n"
             "• /чек <сумма> - добавить чек с указанной суммой\n"
-            "• /рек — реквизиты одним сообщением (банк, ФИО, карта, телефон — строками под командой)\n"
+            "• /рек — реквизиты одним сообщением (только админы; банк, ФИО, карта, телефон — строками под командой)\n"
             "• /стопрек — предупредить об остановке приема платежей по реквизитам\n\n"
         )
 
@@ -2527,8 +2527,11 @@ def check_wallet_address_in_transaction(data: dict, wallet_address: Optional[str
 
 @router.message(Command("рек"), VerifierGroupOrAnonymousLinkedFilter())
 async def cmd_rek(message: Message):
-    """Реквизиты в клиентские группы и анонимные ЛС — одним сообщением (несколько строк под /рек)."""
+    """Реквизиты в клиентские группы и анонимные ЛС — одним сообщением (несколько строк под /рек). Только админы."""
     if not message.chat or not message.text:
+        return
+    if not message.from_user or not is_admin(message.from_user.id):
+        await message.answer(**msg_err("Команда /рек доступна только администраторам бота."))
         return
     parsed = _parse_rek_one_message_text(message.text)
     if not parsed:
