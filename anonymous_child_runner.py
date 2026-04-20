@@ -15,7 +15,11 @@ from bot.anonymous_chat import list_active_child_bot_tokens
 from bot.anonymous_relay_handlers import register_anonymous_handlers
 from bot.pg import init_schema
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = float(os.environ.get("ANONYMOUS_CHILD_POLL_INTERVAL", "15"))

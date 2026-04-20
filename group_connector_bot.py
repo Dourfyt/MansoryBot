@@ -132,7 +132,11 @@ _configure_time_locale()
 
 router = Router()
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 # Анонимные чаты: только дочерние боты (anonymous_child_runner). Основной бот — verifier, relay HTTP, CRM.
 
@@ -404,7 +408,7 @@ def is_admin(user_id: int) -> bool:
 
 
 async def can_broadcast_rek(message: Message) -> bool:
-    """/рек: админы из ADMINS или создатель этой группы/супергруппы в Telegram."""
+    """/рек: ADMINS бота или создатель/администратор этой группы в Telegram."""
     if not message.from_user or not message.chat:
         return False
     if is_admin(message.from_user.id):
@@ -413,7 +417,7 @@ async def can_broadcast_rek(message: Message) -> bool:
         return False
     try:
         member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-        return member.status == "creator"
+        return member.status in ("creator", "administrator")
     except Exception:
         logging.exception(
             "can_broadcast_rek: get_chat_member chat=%s user=%s",
@@ -1894,7 +1898,7 @@ async def cmd_start_connected_group(message: Message):
             "Доступные команды:\n"
             "• Кнопки «Подтвердить» и «Фейк/Нету» под фото чека (после ввода суммы подпись «Проверено» и кнопка с галочкой)\n"
             "• /чек <сумма> - добавить чек с указанной суммой\n"
-            "• /рек — реквизиты одним сообщением (админы бота или создатель группы; банк, ФИО, карта, телефон — строками под командой)\n"
+            "• /рек — реквизиты одним сообщением (админы бота или админы группы в Telegram; банк, ФИО, карта, телефон — строками под командой)\n"
             "• /стопрек — предупредить об остановке приема платежей по реквизитам\n\n"
         )
 
@@ -2282,8 +2286,6 @@ async def cmd_help(message: Message):
 async def cmd_photo_check(message: Message):
     """Обработчик команды /п в группе клиентов"""
     # Фильтр уже проверил роль группы, поэтому сразу приступаем к обработке
-    logging.info(f"✅ Обрабатываем /п в группе клиентов {message.chat.id}")
-    
     # Проверяем, есть ли фото
     if not message.photo:
         await message.answer(**msg_err("Команда /п должна содержать фото!"))
@@ -2299,20 +2301,14 @@ async def cmd_photo_check(message: Message):
     
     try:
         rv_markup = receipt_verification_keyboard(message.chat.id, message.message_id)
-        logging.info(f"Создана клавиатура с callback_data: confirm_receipt:{message.chat.id}:{message.message_id}")
-        logging.info(f"Отправляем фото в группу проверяющих с кнопками")
-        logging.info(f"Клавиатура: {rv_markup}")
-        
+
         # Пересылаем фото в группу проверяющих с кнопками
         try:
-            logging.info(f"Пытаемся отправить фото в группу проверяющих {verifier_group_id}")
-            
             # Сначала проверяем статус бота в группе
             try:
                 bot_info = await bot.get_me()
                 chat_member = await bot.get_chat_member(verifier_group_id, bot_info.id)
-                logging.info(f"Статус бота в группе {verifier_group_id}: {chat_member.status}")
-                
+
                 if chat_member.status in ["left", "kicked"]:
                     await message.answer(
                         **msg_err(
@@ -2331,7 +2327,6 @@ async def cmd_photo_check(message: Message):
                 caption=f"Выберите действие:",
                 reply_markup=rv_markup,
             )
-            logging.info(f"✅ Фото успешно отправлено в группу проверяющих {verifier_group_id}")
         except Exception as e:
             error_msg = str(e)
             logging.error(f"Ошибка при отправке фото в группу {verifier_group_id}: {error_msg}")
@@ -2339,7 +2334,9 @@ async def cmd_photo_check(message: Message):
             # Добавляем диагностику токена
             try:
                 bot_info = await bot.get_me()
-                logging.info(f"Используемый бот: @{bot_info.username} (ID: {bot_info.id})")
+                logging.debug(
+                    "Используемый бот: @%s id=%s", bot_info.username, bot_info.id
+                )
             except Exception as token_error:
                 logging.error(f"Ошибка при получении информации о боте: {token_error}")
             
@@ -2347,7 +2344,6 @@ async def cmd_photo_check(message: Message):
                 logging.warning(f"Бот был кикнут из группы проверяющих {verifier_group_id}, но сейчас снова добавлен")
                 # Пробуем отправить еще раз, так как бот уже добавлен
                 try:
-                    logging.info(f"Повторная попытка отправки фото в группу {verifier_group_id}")
                     sent_photo = await safe_send_photo(
                         bot,
                         verifier_group_id,
@@ -2355,7 +2351,11 @@ async def cmd_photo_check(message: Message):
                         caption=f"Выберите действие:",
                         reply_markup=rv_markup,
                     )
-                    logging.info("✅ Успешно отправлено фото после повторной попытки")
+                    logging.warning(
+                        "/п повторная отправка ok verifier=%s client_msg=%s",
+                        verifier_group_id,
+                        message.message_id,
+                    )
                 except Exception as retry_error:
                     logging.error(f"Ошибка при повторной отправке фото: {retry_error}")
                     await message.answer(
@@ -2392,8 +2392,13 @@ async def cmd_photo_check(message: Message):
             sent_photo.message_id,
             None,
         )
-        logging.info(f"Сохранена связь: ({message.chat.id}, {message.message_id}) -> ({verifier_group_id}, {sent_photo.message_id})")
-        logging.info(f"Текущие связи: {message_links}")
+        logging.info(
+            "/п client=%s msg=%s verifier=%s sent_msg=%s",
+            message.chat.id,
+            message.message_id,
+            verifier_group_id,
+            sent_photo.message_id,
+        )
         
         # Связи больше не удаляются автоматически - они остаются до перезапуска бота
         
@@ -2562,13 +2567,13 @@ def check_wallet_address_in_transaction(data: dict, wallet_address: Optional[str
 
 @router.message(Command("рек"), VerifierGroupOrAnonymousLinkedFilter())
 async def cmd_rek(message: Message):
-    """Реквизиты в клиентские группы и анонимные ЛС — одним сообщением (несколько строк под /рек). Админы бота или создатель группы."""
+    """Реквизиты в клиентские группы и анонимные ЛС — одним сообщением (несколько строк под /рек). Админы бота или админы группы в Telegram."""
     if not message.chat or not message.text:
         return
     if not await can_broadcast_rek(message):
         await message.answer(
             **msg_err(
-                "Команда /рек доступна администраторам бота или создателю этой группы."
+                "Команда /рек доступна администраторам бота или администраторам/создателю этой группы."
             )
         )
         return
@@ -2740,13 +2745,7 @@ async def handle_tron_links(message: Message):
 @router.callback_query()
 async def handle_callback(callback: CallbackQuery):
     """Обработчик callback кнопок"""
-    logging.info("=== CALLBACK ОБРАБОТЧИК ВЫЗВАН ===")
-    logging.info(f"Тип callback: {type(callback)}")
-    logging.info(f"ID callback: {callback.id}")
-    logging.info(f"Chat ID: {callback.message.chat.id if callback.message else 'None'}")
-    logging.info(f"User ID: {callback.from_user.id if callback.from_user else 'None'}")
     try:
-        logging.info(f"Получен callback: {callback.data}")
         data = callback.data
         if not data:
             await callback.answer("❌ Некорректные данные", show_alert=True)
@@ -2765,7 +2764,6 @@ async def handle_callback(callback: CallbackQuery):
             
         if data.startswith("confirm_receipt:"):
             # Обработка подтверждения чека
-            logging.info("Обрабатываем подтверждение чека")
             parts = data.split(":")
             if len(parts) != 3:
                 await callback.answer("❌ Некорректные данные", show_alert=True)
@@ -2773,7 +2771,6 @@ async def handle_callback(callback: CallbackQuery):
                 
             source_group_id = int(parts[1])
             source_message_id = int(parts[2])
-            logging.info(f"Источник: группа клиентов {source_group_id}, сообщение {source_message_id}")
             
             # Проверяем, что связь с фото чека существует
             if (source_group_id, source_message_id) not in message_links:
@@ -2799,7 +2796,12 @@ async def handle_callback(callback: CallbackQuery):
             # Сохраняем информацию о последнем подтвержденном фото чека для этой группы проверяющих
             last_confirmed_photo[verifier_group_id] = (source_group_id, source_message_id)
             last_confirmation_time[verifier_group_id] = current_time
-            logging.info(f"Сохранено последнее подтвержденное фото: группа проверяющих -> группа клиентов, сообщение {source_message_id}")
+            logging.info(
+                "callback confirm_receipt verifier=%s client=%s mid=%s",
+                verifier_group_id,
+                source_group_id,
+                source_message_id,
+            )
             
             # Просим ввести сумму чека - отправляем новое сообщение в чат
             try:
@@ -2817,7 +2819,6 @@ async def handle_callback(callback: CallbackQuery):
             
         elif data.startswith("fake_receipt:"):
             # Обработка отметки как фейк - показываем подтверждение
-            logging.info("Показываем подтверждение для отметки как фейк")
             parts = data.split(":")
             if len(parts) != 3:
                 await callback.answer("❌ Некорректные данные", show_alert=True)
@@ -2825,7 +2826,6 @@ async def handle_callback(callback: CallbackQuery):
                 
             source_group_id = int(parts[1])
             source_message_id = int(parts[2])
-            logging.info(f"Источник: группа клиентов {source_group_id}, сообщение {source_message_id}")
             
             # Проверяем, что связь с фото чека существует
             if (source_group_id, source_message_id) not in message_links:
@@ -2862,7 +2862,6 @@ async def handle_callback(callback: CallbackQuery):
                     message_id=callback.message.message_id,
                     reply_markup=builder.as_markup()
                 )
-                logging.info("✅ Показаны кнопки подтверждения для отметки как фейк")
             except Exception as e:
                 logging.error(f"Ошибка при показе кнопок подтверждения: {e}")
             
@@ -2870,7 +2869,6 @@ async def handle_callback(callback: CallbackQuery):
             
         elif data.startswith("confirm_fake:"):
             # Подтверждение отметки как фейк
-            logging.info("Подтверждаем отметку как фейк")
             parts = data.split(":")
             if len(parts) != 3:
                 await callback.answer("❌ Некорректные данные", show_alert=True)
@@ -2878,7 +2876,6 @@ async def handle_callback(callback: CallbackQuery):
                 
             source_group_id = int(parts[1])
             source_message_id = int(parts[2])
-            logging.info(f"Источник: группа клиентов {source_group_id}, сообщение {source_message_id}")
             
             # Заменяем кнопки на «Проверено» с кастомным крестиком и обновляем подпись
             try:
@@ -2903,7 +2900,6 @@ async def handle_callback(callback: CallbackQuery):
                     message_id=callback.message.message_id,
                     reply_markup=builder.as_markup()
                 )
-                logging.info("✅ Подпись и кнопки обновлены после подтверждения фейка")
             except Exception as e:
                 logging.error(f"Ошибка при обновлении подписи и кнопок: {e}")
             
@@ -2940,7 +2936,6 @@ async def handle_callback(callback: CallbackQuery):
                         entities=_fake_client.get("entities"),
                         reply_to_message_id=source_message_id,
                     )
-                logging.info("✅ Уведомление о фейке отправлено с reply")
             except Exception as e:
                 logging.error(f"Ошибка при отправке уведомления о фейке с reply: {e}")
                 if not is_anon_dm:
@@ -2952,7 +2947,6 @@ async def handle_callback(callback: CallbackQuery):
                             _fake_fb["text"],
                             entities=_fake_fb.get("entities"),
                         )
-                        logging.info("✅ Уведомление о фейке отправлено без reply")
                     except Exception as e2:
                         logging.error(f"Ошибка при отправке уведомления о фейке: {e2}")
             
@@ -2963,13 +2957,11 @@ async def handle_callback(callback: CallbackQuery):
                 # Очищаем также время последнего подтверждения
                 if verifier_group_id in last_confirmation_time:
                     del last_confirmation_time[verifier_group_id]
-                logging.info(f"Состояние подтвержденного фото сброшено для группы проверяющих {verifier_group_id} после отметки как фейк")
             
             await callback.answer("❌ Чек отмечен как фейк")
             
         elif data.startswith("cancel_fake:"):
             # Отмена отметки как фейк - возвращаем исходные кнопки
-            logging.info("Отменяем отметку как фейк, возвращаем исходные кнопки")
             parts = data.split(":")
             if len(parts) != 3:
                 await callback.answer("❌ Некорректные данные", show_alert=True)
@@ -2977,7 +2969,6 @@ async def handle_callback(callback: CallbackQuery):
                 
             source_group_id = int(parts[1])
             source_message_id = int(parts[2])
-            logging.info(f"Источник: группа клиентов {source_group_id}, сообщение {source_message_id}")
             
             # Возвращаем исходные кнопки "Подтвердить" и "Фейк/Нету"
             try:
@@ -2992,7 +2983,6 @@ async def handle_callback(callback: CallbackQuery):
                     message_id=callback.message.message_id,
                     reply_markup=receipt_verification_keyboard(source_group_id, source_message_id),
                 )
-                logging.info("✅ Возвращены исходные кнопки после отмены фейка")
             except Exception as e:
                 logging.error(f"Ошибка при возврате исходных кнопок: {e}")
             

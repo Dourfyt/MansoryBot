@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot as AiogramBot
+from aiogram.exceptions import TelegramBadRequest
 
 from . import config
 from .group_queries import _normalize_ts, format_ts_ru_msk
@@ -973,6 +974,49 @@ def _fetch_verifier_notify_for_telegram_purge(
         return [(int(a), int(b), int(c)) for a, b, c in cur.fetchall()]
 
 
+_PURGE_DELETE_EXPECTED_SUBSTRINGS = (
+    "can't be deleted",
+    "can not be deleted",
+    "message to delete not found",
+    "message can't be found",
+    "message_id_invalid",
+    "message identifier is not valid",
+    "message is not modified",
+)
+
+
+async def _purge_try_delete_message(
+    bot: AiogramBot, chat_id: int, message_id: int, log_what: str
+) -> None:
+    """Удаление при очистке релея: ожидаемые отказы Telegram — только warning, без traceback."""
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except TelegramBadRequest as e:
+        desc = ((getattr(e, "message", None) or str(e)) or "").lower()
+        if any(s in desc for s in _PURGE_DELETE_EXPECTED_SUBSTRINGS):
+            logger.warning(
+                "purge: пропуск удаления %s chat=%s mid=%s — %s",
+                log_what,
+                chat_id,
+                message_id,
+                e,
+            )
+            return
+        logger.exception(
+            "purge: TelegramBadRequest при удалении %s chat=%s mid=%s",
+            log_what,
+            chat_id,
+            message_id,
+        )
+    except Exception:
+        logger.exception(
+            "purge: не удалось удалить %s chat=%s mid=%s",
+            log_what,
+            chat_id,
+            message_id,
+        )
+
+
 async def _delete_relay_rows_in_telegram(
     bot: AiogramBot,
     rows: List[Tuple[int, int, int, int, int, Optional[int]]],
@@ -980,23 +1024,17 @@ async def _delete_relay_rows_in_telegram(
     """Удаляет у получателей копии релея и (один раз) исходное сообщение отправителя в ЛС с ботом."""
     seen_source: Set[Tuple[int, int]] = set()
     for _rid, _room, peer_id, relay_mid, from_uid, src in rows:
-        try:
-            await bot.delete_message(peer_id, relay_mid)
-        except Exception:
-            logger.exception(
-                "purge: не удалось удалить relay peer=%s mid=%s", peer_id, relay_mid
-            )
+        await _purge_try_delete_message(
+            bot, peer_id, relay_mid, f"relay peer={peer_id}"
+        )
         if src is not None:
             key = (from_uid, src)
             if key in seen_source:
                 continue
             seen_source.add(key)
-            try:
-                await bot.delete_message(from_uid, src)
-            except Exception:
-                logger.exception(
-                    "purge: не удалось удалить исходное ЛС user=%s mid=%s", from_uid, src
-                )
+            await _purge_try_delete_message(
+                bot, from_uid, src, f"исходное ЛС user={from_uid}"
+            )
 
 
 async def _delete_verifier_rows_in_telegram(
@@ -1004,12 +1042,9 @@ async def _delete_verifier_rows_in_telegram(
     rows: List[Tuple[int, int, int]],
 ) -> None:
     for _room, peer_id, relay_mid in rows:
-        try:
-            await bot.delete_message(peer_id, relay_mid)
-        except Exception:
-            logger.exception(
-                "purge: verifier relay peer=%s mid=%s", peer_id, relay_mid
-            )
+        await _purge_try_delete_message(
+            bot, peer_id, relay_mid, f"verifier relay peer={peer_id}"
+        )
 
 
 async def _purge_telegram_for_stale_anonymous_data(

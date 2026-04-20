@@ -21,6 +21,8 @@
 services:
   postgres:
     image: postgres:15-alpine
+    # Важно: при POSTGRES_USER≠postgres роль «postgres» в кластере не создаётся.
+    # Любые клиенты (GUI, psql) должны подключаться как balenciaga_admin + POSTGRES_PASSWORD ниже.
     environment:
       TZ: ${TZ:-Europe/Moscow}
       POSTGRES_USER: balenciaga_admin
