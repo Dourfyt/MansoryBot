@@ -167,20 +167,33 @@ def _rek_normalize_phone(text: str) -> Optional[str]:
 
 def _parse_rek_one_message_text(raw: str) -> Optional[Tuple[str, str, str, str]]:
     """
-    Одно сообщение /рек: банк, ФИО (одна или несколько строк), карта (16 цифр), телефон — последние две строки.
+    /рек: банк, ФИО (одна или несколько строк), карта (16 цифр); телефон — последняя строка, необязательно.
+    Если телефона нет, последняя строка — карта (достаточно 3 строк после /рек).
     """
     body = _REK_CMD_PREFIX.sub("", (raw or "").strip())
     lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
-    if len(lines) < 4:
+    if len(lines) < 3:
         return None
-    phone = _rek_normalize_phone(lines[-1])
-    card16 = _rek_normalize_card_digits(lines[-2])
-    if not phone or not card16:
+
+    last_phone = _rek_normalize_phone(lines[-1])
+    prev_card = _rek_normalize_card_digits(lines[-2]) if len(lines) >= 2 else None
+    last_card = _rek_normalize_card_digits(lines[-1])
+
+    if len(lines) >= 4 and last_phone is not None and prev_card is not None:
+        bank = lines[0]
+        fio = " ".join(lines[1:-2]).strip()
+        card16 = prev_card
+        phone = last_phone
+    elif last_card is not None:
+        bank = lines[0]
+        fio = " ".join(lines[1:-1]).strip()
+        card16 = last_card
+        phone = ""
+    else:
         return None
-    bank = lines[0]
+
     if not bank or len(bank) > 500:
         return None
-    fio = " ".join(lines[1:-2]).strip()
     if not fio or len(fio) > 500:
         return None
     return bank, fio, card16, phone
@@ -197,14 +210,16 @@ async def broadcast_rekvizit_to_linked_chats(
     bank_e = html_lib.escape(bank.strip())
     fio_e = html_lib.escape(fio.strip())
     card_disp = _rek_format_card_display(card16)
-    phone_e = html_lib.escape(phone.strip())
-    text = (
-        "<b>Реквизиты для оплаты</b>\n\n"
-        f"Банк: {bank_e}\n"
-        f"ФИО: {fio_e}\n"
-        f"Карта: <code>{html_lib.escape(card_disp)}</code>\n"
-        f"Телефон: {phone_e}"
-    )
+    phone_st = (phone or "").strip()
+    parts = [
+        "<b>Реквизиты для оплаты</b>\n\n",
+        f"Банк: {bank_e}\n",
+        f"ФИО: {fio_e}\n",
+        f"Карта: <code>{html_lib.escape(card_disp)}</code>",
+    ]
+    if phone_st:
+        parts.append(f"\nТелефон: {html_lib.escape(phone_st)}")
+    text = "".join(parts)
     stats = {
         "client_sent": 0,
         "client_failed": 0,
@@ -2564,13 +2579,14 @@ async def cmd_rek(message: Message):
             "<b>1</b> — банк\n"
             "<b>2</b> — ФИО (можно несколько строк подряд)\n"
             "<b>3</b> — номер карты (16 цифр, можно с пробелами)\n"
-            "<b>4</b> — телефон (10–15 цифр)\n\n"
-            "Пример:\n"
+            "<b>4</b> — телефон по желанию (10–15 цифр), отдельной строкой после карты\n\n"
+            "Пример без телефона:\n"
             "<pre>/рек\n"
             "Сбербанк\n"
             "Иванов Иван Иванович\n"
-            "1234 5678 9012 3456\n"
-            "+7 900 123-45-67</pre>",
+            "1234 5678 9012 3456</pre>\n\n"
+            "С телефоном — добавьте строку в конце:\n"
+            "<pre>+7 900 123-45-67</pre>",
             parse_mode="HTML",
         )
         return
