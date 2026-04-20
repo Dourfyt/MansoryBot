@@ -3432,7 +3432,15 @@ async def run_broadcast_server():
     site = web.TCPSite(runner, BROADCAST_SERVER_HOST, BROADCAST_SERVER_PORT)
     await site.start()
     logging.info(f"Сервер рассылки: http://{BROADCAST_SERVER_HOST}:{BROADCAST_SERVER_PORT}/broadcast")
-    await asyncio.Event().wait()
+    try:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        raise
+    finally:
+        try:
+            await runner.cleanup()
+        except Exception as e:
+            logging.warning("run_broadcast_server: runner.cleanup: %s", e)
 
 
 async def _watch_bot_token_change(last_token: str) -> None:
@@ -3466,35 +3474,42 @@ async def main():
     bot.init(last_token)
     setup_scheduler()
     group_manager.refresh_broadcast_chats()
-    asyncio.create_task(run_broadcast_server())
+    broadcast_task = asyncio.create_task(run_broadcast_server())
     dp.include_router(router)
 
-    while True:
-        watch_task = asyncio.create_task(_watch_bot_token_change(last_token))
-        try:
-            await dp.start_polling(
-                bot.inner,
-                polling_timeout=30,
-                close_bot_session=True,
-            )
-        except Exception as e:
-            logging.exception("Ошибка start_polling: %s", e)
-            break
-        finally:
-            watch_task.cancel()
+    try:
+        while True:
+            watch_task = asyncio.create_task(_watch_bot_token_change(last_token))
             try:
-                await watch_task
-            except asyncio.CancelledError:
-                pass
+                await dp.start_polling(
+                    bot.inner,
+                    polling_timeout=30,
+                    close_bot_session=True,
+                )
+            except Exception as e:
+                logging.exception("Ошибка start_polling: %s", e)
+                break
+            finally:
+                watch_task.cancel()
+                try:
+                    await watch_task
+                except asyncio.CancelledError:
+                    pass
 
-        new_token = resolve_bot_token()
+            new_token = resolve_bot_token()
+            try:
+                await bot.replace(new_token)
+            except Exception as e:
+                logging.exception("Не удалось пересоздать Bot: %s", e)
+                break
+            last_token = new_token
+            logging.info("Polling перезапущен с актуальным токеном")
+    finally:
+        broadcast_task.cancel()
         try:
-            await bot.replace(new_token)
-        except Exception as e:
-            logging.exception("Не удалось пересоздать Bot: %s", e)
-            break
-        last_token = new_token
-        logging.info("Polling перезапущен с актуальным токеном")
+            await broadcast_task
+        except asyncio.CancelledError:
+            pass
 
 
 if __name__ == "__main__":
