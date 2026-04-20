@@ -924,38 +924,6 @@ def reset_anonymous_room_by_staff(anonymous_chat_id: int) -> Optional[Dict[str, 
     return {"receipts_removed": n}
 
 
-def _fetch_relay_targets_for_telegram_purge(
-    retention_hours: int,
-) -> List[Tuple[int, int, int, int, int, Optional[int]]]:
-    """Строки релея старше порога: id, room_id, peer_id, relay_message_id, from_uid, source_message_id."""
-    with connection() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT id, anonymous_chat_id, peer_telegram_user_id, message_id,
-                   from_telegram_user_id, source_message_id
-            FROM anonymous_relay_targets
-            WHERE sent_at < NOW() - (%s * INTERVAL '1 hour')
-            ORDER BY anonymous_chat_id, id
-            """,
-            (retention_hours,),
-        )
-        out: List[Tuple[int, int, int, int, int, Optional[int]]] = []
-        for r in cur.fetchall():
-            src = r[5]
-            out.append(
-                (
-                    int(r[0]),
-                    int(r[1]),
-                    int(r[2]),
-                    int(r[3]),
-                    int(r[4]),
-                    int(src) if src is not None else None,
-                )
-            )
-        return out
-
-
 def _fetch_verifier_notify_for_telegram_purge(
     retention_hours: int,
 ) -> List[Tuple[int, int, int]]:
@@ -1017,26 +985,6 @@ async def _purge_try_delete_message(
         )
 
 
-async def _delete_relay_rows_in_telegram(
-    bot: AiogramBot,
-    rows: List[Tuple[int, int, int, int, int, Optional[int]]],
-) -> None:
-    """Удаляет у получателей копии релея и (один раз) исходное сообщение отправителя в ЛС с ботом."""
-    seen_source: Set[Tuple[int, int]] = set()
-    for _rid, _room, peer_id, relay_mid, from_uid, src in rows:
-        await _purge_try_delete_message(
-            bot, peer_id, relay_mid, f"relay peer={peer_id}"
-        )
-        if src is not None:
-            key = (from_uid, src)
-            if key in seen_source:
-                continue
-            seen_source.add(key)
-            await _purge_try_delete_message(
-                bot, from_uid, src, f"исходное ЛС user={from_uid}"
-            )
-
-
 async def _delete_verifier_rows_in_telegram(
     bot: AiogramBot,
     rows: List[Tuple[int, int, int]],
@@ -1051,25 +999,7 @@ async def _purge_telegram_for_stale_anonymous_data(
     main_bot: AiogramBot,
     retention_hours: int,
 ) -> None:
-    relay_rows = _fetch_relay_targets_for_telegram_purge(retention_hours)
-    relay_by_room: Dict[int, List[Tuple[int, int, int, int, int, Optional[int]]]] = defaultdict(
-        list
-    )
-    for row in relay_rows:
-        relay_by_room[row[1]].append(row)
-
-    for room_id in sorted(relay_by_room.keys()):
-        token = get_child_bot_token(room_id)
-        room_list = relay_by_room[room_id]
-        if token:
-            child = AiogramBot(token=token)
-            try:
-                await _delete_relay_rows_in_telegram(child, room_list)
-            finally:
-                await child.session.close()
-        else:
-            await _delete_relay_rows_in_telegram(main_bot, room_list)
-
+    """Только anonymous_verifier_notify_reply: релей anonymous_relay_targets по TTL не трогаем."""
     ver_rows = _fetch_verifier_notify_for_telegram_purge(retention_hours)
     ver_by_room: Dict[int, List[Tuple[int, int, int]]] = defaultdict(list)
     for row in ver_rows:
@@ -1091,10 +1021,11 @@ async def _purge_telegram_for_stale_anonymous_data(
 def purge_stale_anonymous_chat_data(retention_hours: int = 48) -> Dict[str, int]:
     """
     Удаляет данные старше retention_hours: историю CRM (anonymous_chat_messages),
-    служебные ряды релея для /delete (anonymous_relay_targets),
     цели reply для уведомлений по /п (anonymous_verifier_notify_reply).
 
-    Сообщения в Telegram нужно удалять отдельно — см. purge_stale_anonymous_chat_data_with_telegram.
+    anonymous_relay_targets по расписанию не удаляются (нужны для reply и /delete).
+
+    Сообщения в Telegram — см. purge_stale_anonymous_chat_data_with_telegram.
     """
     with connection() as conn:
         cur = conn.cursor()
@@ -1106,14 +1037,7 @@ def purge_stale_anonymous_chat_data(retention_hours: int = 48) -> Dict[str, int]
             (retention_hours,),
         )
         n_msg = cur.rowcount
-        cur.execute(
-            """
-            DELETE FROM anonymous_relay_targets
-            WHERE sent_at < NOW() - (%s * INTERVAL '1 hour')
-            """,
-            (retention_hours,),
-        )
-        n_rel = cur.rowcount
+        n_rel = 0
         cur.execute(
             """
             DELETE FROM anonymous_verifier_notify_reply
@@ -1140,7 +1064,7 @@ async def purge_stale_anonymous_chat_data_with_telegram(
     main_bot: AiogramBot,
     retention_hours: int = 48,
 ) -> Dict[str, int]:
-    """Сначала удаляет сообщения в Telegram (релей и при необходимости исходники в ЛС), затем строки в БД."""
+    """Сначала удаляет в Telegram устаревшие сообщения по verifier_notify, затем строки в БД (без anonymous_relay_targets)."""
     await _purge_telegram_for_stale_anonymous_data(main_bot, retention_hours)
     return purge_stale_anonymous_chat_data(retention_hours)
 
