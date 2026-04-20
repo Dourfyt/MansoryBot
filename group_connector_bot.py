@@ -388,6 +388,26 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMINS
 
 
+async def can_broadcast_rek(message: Message) -> bool:
+    """/рек: админы из ADMINS или создатель этой группы/супергруппы в Telegram."""
+    if not message.from_user or not message.chat:
+        return False
+    if is_admin(message.from_user.id):
+        return True
+    if message.chat.type not in ("group", "supergroup"):
+        return False
+    try:
+        member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+        return member.status == "creator"
+    except Exception:
+        logging.exception(
+            "can_broadcast_rek: get_chat_member chat=%s user=%s",
+            message.chat.id,
+            message.from_user.id,
+        )
+        return False
+
+
 # Кастомные emoji на кнопках под фото чека (Telegram custom emoji id)
 CONFIRM_RECEIPT_CUSTOM_EMOJI_ID = "5870844977914842593"
 FAKE_RECEIPT_CUSTOM_EMOJI_ID = "5805597488316419570"  # «Фейк/Нету» на первом ряду
@@ -1859,7 +1879,7 @@ async def cmd_start_connected_group(message: Message):
             "Доступные команды:\n"
             "• Кнопки «Подтвердить» и «Фейк/Нету» под фото чека (после ввода суммы подпись «Проверено» и кнопка с галочкой)\n"
             "• /чек <сумма> - добавить чек с указанной суммой\n"
-            "• /рек — реквизиты одним сообщением (только админы; банк, ФИО, карта, телефон — строками под командой)\n"
+            "• /рек — реквизиты одним сообщением (админы бота или создатель группы; банк, ФИО, карта, телефон — строками под командой)\n"
             "• /стопрек — предупредить об остановке приема платежей по реквизитам\n\n"
         )
 
@@ -2527,11 +2547,15 @@ def check_wallet_address_in_transaction(data: dict, wallet_address: Optional[str
 
 @router.message(Command("рек"), VerifierGroupOrAnonymousLinkedFilter())
 async def cmd_rek(message: Message):
-    """Реквизиты в клиентские группы и анонимные ЛС — одним сообщением (несколько строк под /рек). Только админы."""
+    """Реквизиты в клиентские группы и анонимные ЛС — одним сообщением (несколько строк под /рек). Админы бота или создатель группы."""
     if not message.chat or not message.text:
         return
-    if not message.from_user or not is_admin(message.from_user.id):
-        await message.answer(**msg_err("Команда /рек доступна только администраторам бота."))
+    if not await can_broadcast_rek(message):
+        await message.answer(
+            **msg_err(
+                "Команда /рек доступна администраторам бота или создателю этой группы."
+            )
+        )
         return
     parsed = _parse_rek_one_message_text(message.text)
     if not parsed:
