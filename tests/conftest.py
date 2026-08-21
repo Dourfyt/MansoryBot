@@ -12,7 +12,7 @@ os.environ.setdefault(
     "DATABASE_URL",
     os.environ.get(
         "TEST_DATABASE_URL",
-        "postgresql://balenciaga_admin:S5VSaX0%2FOvWCP%2BDDYFplAOdrDPSDzcpl3qIcUnqPZrQ%3D@127.0.0.1:5432/crm",
+        "postgresql://mansory_admin:S5VSaX0%2FOvWCP%2BDDYFplAOdrDPSDzcpl3qIcUnqPZrQ%3D@127.0.0.1:5432/crm",
     ),
 )
 

@@ -7,7 +7,19 @@ import { useRouter } from 'next/navigation';
 export default function AnonymousChatsRedirectPage() {
   const router = useRouter();
   useEffect(() => {
-    router.replace('/?tab=anonymous');
+    (async () => {
+      try {
+        const res = await fetch('/api/auth/session');
+        if (!res.ok) {
+          router.replace('/');
+          return;
+        }
+        const d = await res.json();
+        router.replace(d.features?.anonymousChats ? '/?tab=anonymous' : '/');
+      } catch {
+        router.replace('/');
+      }
+    })();
   }, [router]);
   return (
     <div className="min-h-screen bg-background animated-bg text-white flex items-center justify-center p-4">

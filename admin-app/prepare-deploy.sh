@@ -27,11 +27,11 @@ cp .dockerignore deployment-package/
 
 # Create archive
 echo "🗜️ Creating deployment archive..."
-tar -czf balenciaga-admin-deploy.tar.gz deployment-package/
+tar -czf mansory-admin-deploy.tar.gz deployment-package/
 
 # Cleanup
 rm -rf deployment-package/
 
-echo "✅ Deployment package created: balenciaga-admin-deploy.tar.gz"
+echo "✅ Deployment package created: mansory-admin-deploy.tar.gz"
 echo "📤 Upload this file to your server and extract it"
 echo "🚀 Then run: sudo ./deploy.sh"

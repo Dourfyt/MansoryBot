@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionFromRequest, requireAdmin } from './auth';
 import { getSupportPermissionsByUserId, type SupportPermissions } from './support-permissions';
+import {
+  anonymousChatsDisabledResponse,
+  isAnonymousChatsEnabled,
+} from './anonymous-chats-feature';
 
 /** Только admin: CRM-пользователи, токен бота и т.п. */
 export async function assertAdmin(request: NextRequest): Promise<NextResponse | null> {
@@ -35,4 +39,21 @@ export async function assertAdminOrSupportPermission(
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
   return null;
+}
+
+/** Фича выключена — 404 без тела (не сообщаем, что фича отключена). */
+export function assertAnonymousChatsEnabled(): NextResponse | null {
+  if (!isAnonymousChatsEnabled()) {
+    return anonymousChatsDisabledResponse();
+  }
+  return null;
+}
+
+/** Права support/admin + фича анонимных чатов включена. */
+export async function assertAnonymousChatsApi(
+  request: NextRequest,
+): Promise<NextResponse | null> {
+  const featureOff = assertAnonymousChatsEnabled();
+  if (featureOff) return featureOff;
+  return assertAdminOrSupportPermission(request, 'anonymous');
 }

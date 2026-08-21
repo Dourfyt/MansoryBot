@@ -29,13 +29,15 @@ function formatPermissionSummary(p: SupportPermissions): string {
 function PermCheckboxes({
   value,
   onChange,
+  keys = SUPPORT_PERMISSION_KEYS,
 }: {
   value: SupportPermissions;
   onChange: (next: SupportPermissions) => void;
+  keys?: readonly (keyof SupportPermissions)[];
 }) {
   return (
     <div className="grid gap-2 sm:grid-cols-2">
-      {SUPPORT_PERMISSION_KEYS.map((key) => (
+      {keys.map((key) => (
         <label
           key={key}
           className="flex items-start gap-2 text-sm text-gray-300 cursor-pointer"
@@ -96,6 +98,11 @@ export default function CrmSettingsPage() {
   const [tokenById, setTokenById] = useState<Record<number, string>>({});
   const [savingToken, setSavingToken] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [anonymousChatsFeature, setAnonymousChatsFeature] = useState(false);
+
+  const panelPermissionKeys = anonymousChatsFeature
+    ? SUPPORT_PERMISSION_KEYS
+    : SUPPORT_PERMISSION_KEYS.filter((k) => k !== 'anonymous');
 
   const load = async (opts?: { silent?: boolean }) => {
     const silent = opts?.silent ?? false;
@@ -130,6 +137,16 @@ export default function CrmSettingsPage() {
 
   useEffect(() => {
     load();
+    (async () => {
+      try {
+        const res = await fetch('/api/auth/session');
+        if (!res.ok) return;
+        const d = await res.json();
+        setAnonymousChatsFeature(!!d.features?.anonymousChats);
+      } catch {
+        /* ignore */
+      }
+    })();
   }, []);
 
   const createSupport = async () => {
@@ -356,7 +373,11 @@ export default function CrmSettingsPage() {
                             className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm font-mono"
                           />
                           <div className="text-xs text-gray-500 mb-1">Права в панели</div>
-                          <PermCheckboxes value={editPerms} onChange={setEditPerms} />
+                          <PermCheckboxes
+                            value={editPerms}
+                            onChange={setEditPerms}
+                            keys={panelPermissionKeys}
+                          />
                           <div className="flex gap-2">
                             <button
                               type="button"
@@ -422,7 +443,11 @@ export default function CrmSettingsPage() {
                 <h3 className="text-sm font-medium text-gray-300 mb-2">Новый support</h3>
                 <div className="flex flex-col gap-2">
                   <div className="text-xs text-gray-500 mb-1">Права в панели</div>
-                  <PermCheckboxes value={newPerms} onChange={setNewPerms} />
+                  <PermCheckboxes
+                    value={newPerms}
+                    onChange={setNewPerms}
+                    keys={panelPermissionKeys}
+                  />
                   <div className="flex flex-col sm:flex-row gap-2">
                     <input
                       type="email"

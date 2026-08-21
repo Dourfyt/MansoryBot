@@ -5,6 +5,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from . import ui_copy as ui
+from .ui_copy import MONEY_DECIMAL_PLACES, format_money
 from .pg import connection
 
 _UTC = ZoneInfo("UTC")
@@ -77,6 +79,24 @@ def insert_payout(chat_id: int, amount: float, ts: str) -> None:
             "INSERT INTO payouts (chat_id, amount, ts) VALUES (%s, %s, %s)",
             (chat_id, amount, ts),
         )
+
+
+def resolve_receipt_rate_ids(
+    chat_id: int,
+    rate_value: Optional[float],
+    percent_value: Optional[float],
+) -> Tuple[Optional[int], Optional[int]]:
+    """ID курса и процента для чека: явные значения или дефолты чата."""
+    default_rate_id, default_retention_id = get_default_rate_ids(chat_id)
+    if rate_value is not None:
+        exchange_rate_id = find_or_create_exchange_rate(chat_id, rate_value)
+    else:
+        exchange_rate_id = default_rate_id
+    if percent_value is not None:
+        retention_rate_id = find_or_create_retention_rate(chat_id, percent_value)
+    else:
+        retention_rate_id = default_retention_id
+    return exchange_rate_id, retention_rate_id
 
 
 def find_or_create_exchange_rate(chat_id: int, rate: float) -> int:
@@ -610,7 +630,7 @@ def build_cheki_today_snapshot(chat_id: int, today: str) -> Optional[Dict[str, A
                 else default_retention_value
             )
             converted = (
-                round(float(amount) / effective_rate, 2)
+                round(float(amount) / effective_rate, MONEY_DECIMAL_PLACES)
                 if effective_rate is not None
                 else None
             )
@@ -618,7 +638,8 @@ def build_cheki_today_snapshot(chat_id: int, today: str) -> Optional[Dict[str, A
             if converted is not None:
                 if effective_retention is not None:
                     payout_val = round(
-                        converted * (1 - effective_retention / 100.0), 2
+                        converted * (1 - effective_retention / 100.0),
+                        MONEY_DECIMAL_PLACES,
                     )
                 else:
                     payout_val = converted
@@ -630,13 +651,13 @@ def build_cheki_today_snapshot(chat_id: int, today: str) -> Optional[Dict[str, A
                 [
                     receipt_no,
                     time_str,
-                    f"{float(amount):.2f}",
+                    format_money(amount),
                     f"{effective_rate}" if effective_rate is not None else "—",
                     f"{effective_retention}"
                     if effective_retention is not None
                     else "—",
-                    f"{converted:.2f}" if converted is not None else "—",
-                    f"{payout_val:.2f}" if payout_val is not None else "—",
+                    format_money(converted) if converted is not None else "—",
+                    format_money(payout_val) if payout_val is not None else "—",
                 ]
             )
 
@@ -652,8 +673,12 @@ def build_cheki_today_snapshot(chat_id: int, today: str) -> Optional[Dict[str, A
         }
 
 
-def format_info_message_html(snapshot: Dict[str, Any], daily_report: bool = False) -> str:
-    """Текст ответа /инфо или ежедневной рассылки."""
+def format_info_message_html(
+    snapshot: Dict[str, Any],
+    daily_report: bool = False,
+    intermediate: bool = False,
+) -> str:
+    """Текст ответа /инфо, ежедневной или промежуточной рассылки."""
     rows = snapshot["rows"]
     default_rate_value = snapshot["default_rate_value"]
     default_retention_value = snapshot["default_retention_value"]
@@ -664,7 +689,7 @@ def format_info_message_html(snapshot: Dict[str, Any], daily_report: bool = Fals
     paid_already = snapshot["paid_already"]
     remaining = snapshot["remaining"]
 
-    lines: List[str] = []
+    blocks: List[str] = []
     for receipt_no, amount, ts, exch_rate, retention_percent in rows:
         effective_rate = (
             float(exch_rate) if exch_rate is not None else default_rate_value
@@ -674,62 +699,56 @@ def format_info_message_html(snapshot: Dict[str, Any], daily_report: bool = Fals
             if retention_percent is not None
             else default_retention_value
         )
-        dt = _normalize_ts(ts)
-        ts_fmt = _format_datetime_ru(dt)
+        ts_fmt = _format_datetime_ru(_normalize_ts(ts))
+        amt = float(amount)
 
         if effective_rate is not None:
-            converted = round(float(amount) / effective_rate, 2)
-            payout_converted = (
-                converted * (1 - effective_percent / 100.0)
+            converted = round(amt / effective_rate, MONEY_DECIMAL_PLACES)
+            payout = (
+                round(converted * (1 - effective_percent / 100.0), MONEY_DECIMAL_PLACES)
                 if effective_percent is not None
                 else converted
             )
-            retention_info = (
-                f"⚖️ Процент: <b>{effective_percent}%</b>\n"
-                if effective_percent is not None
-                else "⚖️ Процент: <b>—</b>\n"
-            )
-            lines.append(
-                f"<b>🧾 Чек №{receipt_no} | {ts_fmt}</b>\n"
-                f"🤑 Сумма: <b>{float(amount):.2f}</b>\n"
-                f"💱 Курс: <b>{effective_rate}</b>\n"
-                f"{retention_info}"
-                f"📤 Выплата: <b>{payout_converted:.2f}</b>\n"
-                f"<b>_____</b>"
+            blocks.append(
+                ui.info_receipt_block(
+                    receipt_no,
+                    ts_fmt,
+                    amt,
+                    rate=effective_rate,
+                    percent=effective_percent,
+                    payout=payout,
+                )
             )
         else:
-            retention_info = (
-                f"📉 Процент: <b>{effective_percent}%</b>\n"
-                if effective_percent is not None
-                else "📉 Удержание: <b>—</b>\n"
-            )
-            lines.append(
-                f"<b>🧾 Чек №{receipt_no} | {ts_fmt}</b>\n"
-                f"🤑 Сумма: <b>{float(amount):.2f}</b>\n"
-                f"<b>⚠️ Курс не указан</b>\n"
-                f"{retention_info}"
-                f"<b>_____</b>"
+            blocks.append(
+                ui.info_receipt_block(
+                    receipt_no,
+                    ts_fmt,
+                    amt,
+                    percent=effective_percent,
+                    rate_missing=True,
+                )
             )
 
-    text = "\n".join(lines)
+    body = "\n".join(blocks) if blocks else "<i>За сегодня операций пока нет.</i>\n"
     header = ""
-    if daily_report:
-        header = (
-            f"📅 <b>Ежедневный отчёт за {datetime.now().strftime('%d.%m.%Y')}</b>\n\n"
-        )
-    return (
-        f"{header}"
-        f"Последние 15 чеков:\n{text}\n\n"
-        f"⚙️ <b>Курс</b> = {default_rate_value if default_rate_value is not None else '—'}, "
-        f"<b>Процент</b> = {default_retention_value if default_retention_value is not None else '—'}%\n"
-        f"📦 <b>Сумма всех чеков:</b> "
-        + " | ".join(
-            [f"{total_default_amount:.2f}"]
-            + [f"{amt:.2f}" for amt in other_group_amounts]
-        )
-        + "\n"
-        f"♻️ <b>Оборот за сегодня:</b> {total_orders_converted_sum:.2f}\n"
-        f"💸 <b>Всего к выплате:</b> {total_to_pay:.2f}\n"
-        f"✅ <b>Уже выплачено:</b> {paid_already:.2f}\n"
-        f"💰 <b>Осталось:</b> {remaining:.2f}"
+    if intermediate:
+        header = ui.intermediate_report_header_html()
+    elif daily_report:
+        header = ui.daily_report_header_html()
+    sums = " · ".join(
+        [format_money(total_default_amount)]
+        + [format_money(a) for a in other_group_amounts]
     )
+    rate_s = default_rate_value if default_rate_value is not None else "—"
+    pct_s = default_retention_value if default_retention_value is not None else "—"
+    footer = ui.info_footer(
+        rate_s=str(rate_s),
+        pct_s=str(pct_s),
+        sums=sums,
+        turnover=total_orders_converted_sum,
+        total_to_pay=total_to_pay,
+        paid=paid_already,
+        remaining=remaining,
+    )
+    return f"{header}<b>Последние чеки</b>\n{body}\n{footer}"

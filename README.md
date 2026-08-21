@@ -1,4 +1,4 @@
-# Balenciaga Bot — Telegram-бот для учёта чеков и связок групп
+# Mansory Bot — Telegram-бот для учёта чеков и связок групп
 
 ## Описание
 

@@ -1,6 +1,6 @@
-# Balenciaga Bot Admin Panel
+# Mansory Bot Admin Panel
 
-Админ-панель для управления связями групп Telegram бота Balenciaga.
+Админ-панель для управления связями групп Telegram бота Mansory.
 
 ## 🚀 Деплой на сервер
 
@@ -14,14 +14,14 @@
 
 1. **Скопируйте файлы на сервер:**
 ```bash
-scp -r admin-app/* user@your-server:/tmp/balenciaga-admin/
+scp -r admin-app/* user@your-server:/tmp/mansory-admin/
 ```
 
 2. **Подключитесь к серверу и запустите деплой:**
 ```bash
 ssh user@your-server
-sudo mv /tmp/balenciaga-admin /opt/
-cd /opt/balenciaga-admin
+sudo mv /tmp/mansory-admin /opt/
+cd /opt/mansory-admin
 sudo chmod +x deploy.sh
 sudo ./deploy.sh
 ```
@@ -42,9 +42,9 @@ sudo systemctl enable docker
 
 3. **Скопируйте приложение:**
 ```bash
-sudo mkdir -p /opt/balenciaga-admin
-sudo cp -r ./* /opt/balenciaga-admin/
-cd /opt/balenciaga-admin
+sudo mkdir -p /opt/mansory-admin
+sudo cp -r ./* /opt/mansory-admin/
+cd /opt/mansory-admin
 ```
 
 4. **Запустите приложение:**
@@ -55,8 +55,8 @@ sudo docker-compose up -d
 
 5. **Настройте nginx:**
 ```bash
-sudo cp nginx.conf /etc/nginx/sites-available/balenciaga-admin
-sudo ln -sf /etc/nginx/sites-available/balenciaga-admin /etc/nginx/sites-enabled/
+sudo cp nginx.conf /etc/nginx/sites-available/mansory-admin
+sudo ln -sf /etc/nginx/sites-available/mansory-admin /etc/nginx/sites-enabled/
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo systemctl restart nginx
 ```
@@ -70,19 +70,19 @@ sudo certbot --nginx -d jsanfasfnkajfkasjkf.ru -d www.jsanfasfnkajfkasjkf.ru --n
 
 ### Просмотр логов
 ```bash
-cd /opt/balenciaga-admin
+cd /opt/mansory-admin
 sudo docker-compose logs -f
 ```
 
 ### Перезапуск приложения
 ```bash
-cd /opt/balenciaga-admin
+cd /opt/mansory-admin
 sudo docker-compose restart
 ```
 
 ### Обновление приложения
 ```bash
-cd /opt/balenciaga-admin
+cd /opt/mansory-admin
 sudo docker-compose down
 sudo docker-compose build --no-cache
 sudo docker-compose up -d

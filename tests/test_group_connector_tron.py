@@ -1,5 +1,8 @@
 """Парсинг Tron-транзакций (без сети)."""
-import group_connector_bot as gcb
+from bot.tron_transaction import (
+    check_wallet_address_in_transaction,
+    extract_amount_from_transaction_data,
+)
 
 
 def test_extract_amount_transaction_behavior_with_decimals() -> None:
@@ -9,7 +12,7 @@ def test_extract_amount_transaction_behavior_with_decimals() -> None:
             "token_info": {"tokenDecimal": 6},
         }
     }
-    assert gcb.extract_amount_from_transaction_data(data) == 1.0
+    assert extract_amount_from_transaction_data(data) == 1.0
 
 
 def test_extract_amount_trc20_list() -> None:
@@ -23,7 +26,7 @@ def test_extract_amount_trc20_list() -> None:
             }
         ]
     }
-    assert abs(gcb.extract_amount_from_transaction_data(data) - 5.0) < 1e-9
+    assert abs(extract_amount_from_transaction_data(data) - 5.0) < 1e-9
 
 
 def test_check_wallet_in_trc20() -> None:
@@ -35,9 +38,9 @@ def test_check_wallet_in_trc20() -> None:
             }
         ]
     }
-    assert gcb.check_wallet_address_in_transaction(data, "Ttohere")
-    assert not gcb.check_wallet_address_in_transaction(data, "Tother")
+    assert check_wallet_address_in_transaction(data, "Ttohere")
+    assert not check_wallet_address_in_transaction(data, "Tother")
 
 
 def test_check_wallet_skips_when_no_address() -> None:
-    assert gcb.check_wallet_address_in_transaction({}, None) is True
+    assert check_wallet_address_in_transaction({}, None) is True

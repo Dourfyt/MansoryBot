@@ -9,6 +9,8 @@ RUN apt-get update \
         libfreetype6 \
         libjpeg62-turbo \
         libpng16-16 \
+        tesseract-ocr \
+        tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { appendAudit, getSessionFromRequest } from '@/lib/auth';
-import { assertAdminOrSupportPermission } from '@/lib/api-guard';
+import { assertAnonymousChatsApi } from '@/lib/api-guard';
 
 async function telegramGetMe(token: string): Promise<{
   username: string;
@@ -31,7 +31,7 @@ export async function POST(
   request: NextRequest,
   context: { params: { id: string } }
 ) {
-  const denied = await assertAdminOrSupportPermission(request, 'anonymous');
+  const denied = await assertAnonymousChatsApi(request);
   if (denied) return denied;
   const session = await getSessionFromRequest(request);
   if (!session) {

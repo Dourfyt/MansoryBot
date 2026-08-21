@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { query } from '@/lib/db';
 import { appendAudit, getSessionFromRequest } from '@/lib/auth';
-import { assertAdminOrSupportPermission } from '@/lib/api-guard';
+import { assertAnonymousChatsApi } from '@/lib/api-guard';
 import { resolveBotUsername } from '@/lib/resolve-bot-token';
 
 const INVITE_TTL_MINUTES = 180;
@@ -23,7 +23,7 @@ export async function POST(
   request: NextRequest,
   context: { params: { id: string } }
 ) {
-  const denied = await assertAdminOrSupportPermission(request, 'anonymous');
+  const denied = await assertAnonymousChatsApi(request);
   if (denied) return denied;
   const session = await getSessionFromRequest(request);
   if (!session) {

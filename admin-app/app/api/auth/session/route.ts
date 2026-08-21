@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/auth';
+import { isAnonymousChatsEnabled } from '@/lib/anonymous-chats-feature';
 import { getSupportPermissionsByUserId } from '@/lib/support-permissions';
 
 /** Текущая сессия: роль и права саппорта (у admin permissions = null, все разрешено на клиенте). */
@@ -15,5 +16,8 @@ export async function GET(request: NextRequest) {
     email: session.email,
     role: session.role,
     permissions,
+    features: {
+      anonymousChats: isAnonymousChatsEnabled(),
+    },
   });
 }
