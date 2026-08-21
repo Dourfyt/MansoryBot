@@ -8,6 +8,7 @@ import signal
 from typing import Dict, Optional
 
 from aiogram import Bot, Dispatcher, Router
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.anonymous_bot_commands import setup_anonymous_private_bot_commands
@@ -49,17 +50,39 @@ class ChildBotHandle:
     def start(self) -> None:
         self._task = asyncio.create_task(self._run(), name=f"anon-child-{self.room_id}")
 
+    async def _reset_bot(self) -> None:
+        try:
+            await self.bot.session.close()
+        except Exception:
+            pass
+        self.bot = Bot(token=self.token)
+
     async def _run(self) -> None:
         try:
             while True:
                 try:
                     await setup_anonymous_private_bot_commands(self.bot)
-                    await self.dp.start_polling(self.bot, close_bot_session=True)
+                    await self.dp.start_polling(
+                        self.bot,
+                        close_bot_session=True,
+                        polling_timeout=30,
+                    )
                     return
                 except asyncio.CancelledError:
                     raise
+                except TelegramNetworkError as e:
+                    logger.warning(
+                        "Child room_id=%s: сеть Telegram (%s), повтор через 30 с",
+                        self.room_id,
+                        e,
+                    )
+                    await self._reset_bot()
+                    await asyncio.sleep(30)
                 except Exception:
-                    logger.exception("Child-бот room_id=%s, повтор через 5 с", self.room_id)
+                    logger.exception(
+                        "Child-бот room_id=%s, повтор через 5 с", self.room_id
+                    )
+                    await self._reset_bot()
                     await asyncio.sleep(5)
         finally:
             try:

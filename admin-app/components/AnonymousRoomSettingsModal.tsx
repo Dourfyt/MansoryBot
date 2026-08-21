@@ -13,6 +13,12 @@ export interface AnonymousRoomModalChat {
   verifier_group_id: number | null;
 }
 
+export interface AnonymousRoomMember {
+  telegram_user_id: number;
+  nickname: string;
+  joined_at?: string;
+}
+
 interface AnonymousRoomSettingsModalProps {
   isOpen: boolean;
   room: AnonymousRoomModalChat | null;
@@ -29,6 +35,7 @@ interface AnonymousRoomSettingsModalProps {
   onMintInvite: () => void;
   mintingInvite: boolean;
   onCopyInvite: () => void;
+  onMembersUpdated?: () => void;
   formatTime: (s: string | null) => string;
 }
 
@@ -48,6 +55,7 @@ export function AnonymousRoomSettingsModal({
   onMintInvite,
   mintingInvite,
   onCopyInvite,
+  onMembersUpdated,
   formatTime,
 }: AnonymousRoomSettingsModalProps) {
   const [supportLoading, setSupportLoading] = useState(false);
@@ -61,6 +69,11 @@ export function AnonymousRoomSettingsModal({
   const [addCrmId, setAddCrmId] = useState<string>('');
   const [addLabel, setAddLabel] = useState('A');
   const [supportSaving, setSupportSaving] = useState(false);
+
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [membersErr, setMembersErr] = useState<string | null>(null);
+  const [members, setMembers] = useState<AnonymousRoomMember[]>([]);
+  const [kickingTelegramUserId, setKickingTelegramUserId] = useState<number | null>(null);
 
   const loadSupportAdmins = useCallback(async () => {
     if (!room) return;
@@ -79,6 +92,22 @@ export function AnonymousRoomSettingsModal({
     }
   }, [room]);
 
+  const loadMembers = useCallback(async () => {
+    if (!room) return;
+    setMembersLoading(true);
+    setMembersErr(null);
+    try {
+      const res = await fetch(`/api/support/anonymous-chats/${room.id}/members`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Ошибка загрузки');
+      setMembers(data.members || []);
+    } catch (e) {
+      setMembersErr(e instanceof Error ? e.message : 'Ошибка');
+    } finally {
+      setMembersLoading(false);
+    }
+  }, [room]);
+
   useEffect(() => {
     if (!isOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -91,6 +120,10 @@ export function AnonymousRoomSettingsModal({
   useEffect(() => {
     if (isOpen && room) void loadSupportAdmins();
   }, [isOpen, room, loadSupportAdmins]);
+
+  useEffect(() => {
+    if (isOpen && room) void loadMembers();
+  }, [isOpen, room, loadMembers]);
 
   const addSupportAdmin = async () => {
     if (!room) return;
@@ -135,6 +168,32 @@ export function AnonymousRoomSettingsModal({
       setSupportErr(e instanceof Error ? e.message : 'Ошибка');
     } finally {
       setSupportSaving(false);
+    }
+  };
+
+  const kickMember = async (telegramUserId: number) => {
+    if (!room) return;
+    if (!room.is_active) return;
+    if (!window.confirm(`Кикнуть пользователя tg:${telegramUserId} из комнаты #${room.id}?`)) {
+      return;
+    }
+    setKickingTelegramUserId(telegramUserId);
+    setMembersErr(null);
+    try {
+      const res = await fetch(
+        `/api/support/anonymous-chats/${room.id}/members?telegram_user_id=${encodeURIComponent(
+          String(telegramUserId)
+        )}`,
+        { method: 'DELETE' }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Ошибка');
+      await loadMembers();
+      onMembersUpdated?.();
+    } catch (e) {
+      setMembersErr(e instanceof Error ? e.message : 'Ошибка');
+    } finally {
+      setKickingTelegramUserId(null);
     }
   };
 
@@ -222,6 +281,46 @@ export function AnonymousRoomSettingsModal({
                   {inviteText}
                 </pre>
               </div>
+            )}
+          </section>
+
+          <section className="p-3 rounded-lg bg-gray-900/60 border border-gray-700 space-y-2">
+            <h3 className="text-xs font-semibold text-gray-300 uppercase tracking-wide">Участники</h3>
+            <p className="text-xs text-gray-400">
+              Удаляет участника из этой анонимной комнаты (он потеряет доступ к чату).
+            </p>
+            {!room.is_active && (
+              <p className="text-[11px] text-amber-400/90">Комната неактивна: кик отключён.</p>
+            )}
+            {membersErr && <p className="text-[12px] text-red-300">{membersErr}</p>}
+            {membersLoading ? (
+              <p className="text-xs text-gray-500">Загрузка…</p>
+            ) : members.length === 0 ? (
+              <p className="text-xs text-gray-500">Пока нет участников.</p>
+            ) : (
+              <ul className="space-y-1.5">
+                {members.map((m) => (
+                  <li
+                    key={m.telegram_user_id}
+                    className="flex items-center justify-between gap-2 text-xs bg-gray-900/80 rounded-lg px-2 py-1.5 border border-gray-700"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-gray-200 truncate">{m.nickname ? m.nickname : 'без ника'}</div>
+                      <div className="text-[11px] text-gray-500 mt-0.5 font-mono">tg:{m.telegram_user_id}</div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!room.is_active || kickingTelegramUserId === m.telegram_user_id}
+                      onClick={() => void kickMember(m.telegram_user_id)}
+                      className="p-1.5 text-red-400 hover:bg-red-900/40 rounded shrink-0 disabled:opacity-40"
+                      aria-label="Кикнуть"
+                      title="Кикнуть из комнаты"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
             )}
           </section>
 

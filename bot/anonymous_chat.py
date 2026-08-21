@@ -38,83 +38,83 @@ def anonymous_today_msk_date_str() -> str:
     """Сегодня по Europe/Moscow (совпадает с отображением времени чека)."""
     return datetime.now(_MSK_ANON).strftime("%Y-%m-%d")
 
-# Случайные никнеймы для анонимных комнат (английский + эмодзи, до 32 символов).
+# Случайные ники анонимных комнат: «Adj Noun emoji», до 32 символов.
 _ANON_NICK_EMOJI = (
-    "🦊",
-    "🌙",
-    "⚡",
-    "🌊",
-    "🔥",
-    "✨",
-    "🎯",
-    "🚀",
+    "🏎️",
+    "🏁",
+    "🖤",
     "💎",
-    "🌿",
-    "🎭",
-    "🦄",
-    "🐙",
-    "🦋",
-    "⭐️",
-    "🍀",
-    "🎸",
-    "🌴",
+    "⚙️",
+    "🕶️",
+    "🧊",
+    "🪙",
+    "🔑",
+    "🛰️",
+    "💨",
+    "🏆",
+    "🔮",
+    "🧭",
+    "♟️",
+    "🩶",
+    "🔱",
+    "⚜️",
 )
 _ANON_NICK_ADJ = (
-    "Swift",
-    "Quiet",
-    "Bright",
-    "Neon",
-    "Cosmic",
-    "Silent",
-    "Golden",
-    "Wild",
-    "Lunar",
-    "Solar",
-    "Misty",
-    "Crimson",
-    "Azure",
-    "Shadow",
-    "Frost",
-    "Storm",
-    "Nova",
-    "Pixel",
-    "Cyber",
-    "Turbo",
-    "Rapid",
-    "Noble",
-    "Brave",
-    "Calm",
+    "Carbon",
+    "Chrome",
+    "Matte",
+    "Obsidian",
+    "Platinum",
+    "Velvet",
+    "Forged",
+    "Stealth",
+    "Apex",
+    "Elite",
+    "Royal",
+    "Phantom",
+    "Tuned",
+    "Racing",
+    "Noir",
+    "Ivory",
+    "Titanium",
+    "Amber",
+    "Onyx",
+    "Sapphire",
+    "Ember",
+    "Satin",
+    "Gloss",
+    "Midnight",
 )
 _ANON_NICK_NOUN = (
-    "Fox",
-    "Owl",
-    "Tiger",
-    "Wolf",
-    "Bear",
-    "Hawk",
-    "Raven",
-    "Dragon",
-    "Phoenix",
-    "Lynx",
-    "Comet",
-    "Flux",
-    "Wave",
-    "Spark",
-    "Echo",
-    "Vibe",
-    "Ninja",
-    "Ghost",
-    "Wizard",
+    "GT",
+    "Coupe",
+    "Pulse",
+    "Drift",
+    "Rim",
+    "Crest",
+    "Blade",
+    "Crown",
+    "Engine",
+    "Spoiler",
+    "Bolt",
+    "Rover",
+    "Circuit",
+    "Torque",
+    "Gauge",
+    "Piston",
+    "Vault",
+    "Orbit",
+    "Mirage",
+    "Spectre",
+    "Racer",
+    "Pilot",
+    "Ace",
     "Knight",
-    "Panda",
-    "Eagle",
-    "Shark",
-    "Falcon",
 )
 
 
 def generate_random_nickname_options(count: int = 5) -> List[str]:
-    """Уникальные случайные никнеймы на английском с эмодзи (1–32 символа для БД)."""
+    """Уникальные ники: Adj + Noun + emoji в конце (1–32 символа для БД)."""
     out: List[str] = []
     seen: Set[str] = set()
     max_attempts = max(80, count * 40)
@@ -124,21 +124,20 @@ def generate_random_nickname_options(count: int = 5) -> List[str]:
         adj = random.choice(_ANON_NICK_ADJ)
         noun = random.choice(_ANON_NICK_NOUN)
         emoji = random.choice(_ANON_NICK_EMOJI)
-        nick = f"{emoji} {adj}{noun}"
+        nick = f"{adj} {noun} {emoji}"
         if len(nick) > 32:
-            nick = f"{emoji} {noun}"
+            nick = f"{noun} {emoji}"
         if len(nick) > 32:
-            nick = f"{emoji}{noun}"[:32]
+            nick = f"{noun}{emoji}"[:32]
         if nick in seen:
             continue
         seen.add(nick)
         out.append(nick)
-    # На крайний случай — добиваем уникальными числовыми суффиксами
     n = 0
     while len(out) < count:
         n += 1
         emoji = random.choice(_ANON_NICK_EMOJI)
-        nick = f"{emoji} Guest{n}"
+        nick = f"Guest {n} {emoji}"
         if nick not in seen and len(nick) <= 32:
             seen.add(nick)
             out.append(nick)

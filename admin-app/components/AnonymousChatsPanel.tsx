@@ -447,6 +447,7 @@ export function AnonymousChatsPanel({ enabled }: AnonymousChatsPanelProps) {
         onMintInvite={() => void mintInviteInModal()}
         mintingInvite={inviteMinting}
         onCopyInvite={() => void copyModalInvite()}
+        onMembersUpdated={() => void loadAnonymous(debouncedAnonSearch)}
         formatTime={formatTime}
       />
     </div>
