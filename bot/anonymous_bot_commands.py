@@ -12,15 +12,15 @@ logger = logging.getLogger(__name__)
 ANONYMOUS_PRIVATE_BOT_COMMANDS = [
     BotCommand(
         command="delete",
-        description="удалить своё последнее сообщение",
+        description="убрать своё последнее сообщение",
     ),
     BotCommand(
         command="info",
-        description="информация по комнате",
+        description="сводка по комнате",
     ),
     BotCommand(
         command="cheki_segodnya",
-        description="все чеки за сегодня (файл)",
+        description="чеки за сегодня — файл",
     ),
 ]
 

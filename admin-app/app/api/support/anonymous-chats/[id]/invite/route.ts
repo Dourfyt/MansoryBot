@@ -8,7 +8,7 @@ import { resolveBotUsername } from '@/lib/resolve-bot-token';
 const INVITE_TTL_MINUTES = 180;
 
 const INVITE_USER_MESSAGE =
-  '🤖 Ссылка-приглашение активна 180 минут и позволяет одному пользователю подключиться к этому чату\n\n';
+  'Ссылка активна 180 минут · один вход в комнату\n\n';
 
 /** Только [0-9a-f] — безопасный алфавит для Telegram deep link (?start=). */
 function generateInviteToken(): string {

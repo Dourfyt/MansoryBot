@@ -359,7 +359,7 @@ export function AnonymousRoomSettingsModal({
               Саппорты в чате
             </h3>
             <p className="text-xs text-gray-400">
-              Назначьте саппортов из CRM: в личке с ботом у них будет имя «👁‍🗨 Саппорт A» и т.д., они могут
+              Назначьте саппортов из CRM: в личке у них будет имя «Саппорт A 🎧» и т.д., они могут
               удалять любые чеки в этой комнате, как админ бота. У саппорта в профиле CRM должен быть указан
               Telegram user id.
             </p>
@@ -378,7 +378,7 @@ export function AnonymousRoomSettingsModal({
                         className="flex items-center justify-between gap-2 text-xs bg-gray-900/80 rounded-lg px-2 py-1.5 border border-gray-700"
                       >
                         <span className="text-gray-200 truncate">
-                          👁‍🗨 Саппорт {a.label} · {a.email}
+                          Саппорт {a.label} 🎧 · {a.email}
                           {a.telegram_user_id ? (
                             <span className="text-gray-500 ml-1 font-mono">tg:{a.telegram_user_id}</span>
                           ) : null}

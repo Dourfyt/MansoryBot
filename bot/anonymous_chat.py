@@ -700,7 +700,7 @@ def get_nickname(telegram_user_id: int, room_id: int) -> Optional[str]:
 
 def format_support_relay_display(label: str) -> str:
     """Отображаемое имя назначенного саппорта в релее (латинская буква A–Z)."""
-    return f"👁‍🗨 Саппорт {label}"
+    return f"Саппорт {label} 🎧"
 
 
 def get_anonymous_support_label_for_user(room_id: int, telegram_user_id: int) -> Optional[str]:

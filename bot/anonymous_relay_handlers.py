@@ -112,15 +112,13 @@ def _nickname_invite_keyboard(invite_id: int, options: List[str]) -> InlineKeybo
     for i, opt in enumerate(options):
         label = opt if len(opt) <= 64 else opt[:61] + "…"
         rows.append([InlineKeyboardButton(text=label, callback_data=f"anp:{invite_id}:{i}")])
-    rows.append([InlineKeyboardButton(text="🔄 Другие варианты", callback_data=f"anr:{invite_id}")])
+    rows.append([InlineKeyboardButton(text="Другие варианты", callback_data=f"anr:{invite_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _welcome_anon_room_text(nick: str) -> str:
     return (
-        f"Вы вошли как <b>«{html_escape(nick)}»</b>.\n\n"
-        "Пишите здесь — сообщения увидят участники.\n"
-        "Ответы — reply на сообщение.\n\n"
+        f"{ui.ANON_WELCOME_INTRO.format(nick=html_escape(nick))}\n\n"
         f"{ui.ANON_HELP_HTML}"
     )
 
@@ -132,7 +130,10 @@ async def _notify_room_anonymous_join(
     member_count: int,
 ) -> None:
     """Всем участникам комнаты (включая вошедшего): кто вошёл и сколько человек в чате."""
-    text = f"«{html_escape(nickname)}» вошёл в комнату · участников: <b>{member_count}</b>"
+    text = ui.ANON_JOIN_NOTIFY.format(
+        nick=html_escape(nickname),
+        count=member_count,
+    )
     for uid in list_member_telegram_ids_for_room(room_id):
         try:
             await bot.send_message(uid, text, parse_mode="HTML")
@@ -606,11 +607,11 @@ async def try_anonymous_private_message(
             un = get_child_bot_username_for_room(room_id)
             if un:
                 await message.answer(
-                    f"Анонимные чаты ведутся в отдельном боте. Напишите в @{un}."
+                    f"Эта комната в отдельном боте — напишите в @{un}."
                 )
             else:
                 await message.answer(
-                    "Анонимные чаты ведутся в отдельном боте — откройте его по ссылке-приглашению."
+                    "Эта комната в отдельном боте — откройте его по приглашению."
                 )
             return True
         if not room_id:
@@ -650,7 +651,7 @@ def register_anonymous_handlers(
             switched = try_switch_active_room_by_invite_token(message.from_user.id, token)
             if switched is not None:
                 await message.answer(
-                    "Текущий анонимный чат переключён на эту комнату. Можно писать сообщения."
+                    "Комната переключена. Можно писать."
                 )
                 return
         found = lookup_valid_invite(token)
@@ -660,18 +661,18 @@ def register_anonymous_handlers(
         invite_id, room_id = found
         if child_room_id is not None and int(room_id) != int(child_room_id):
             await message.answer(
-                "Эта ссылка для другого анонимного бота. Откройте приглашение из настроек нужной комнаты."
+                "Эта ссылка к другому боту. Возьмите приглашение из настроек нужной комнаты."
             )
             return
         if master_mode and room_has_child_bot(room_id):
             un = get_child_bot_username_for_room(room_id)
             if un:
                 await message.answer(
-                    f"Эта комната работает в отдельном боте. Откройте @{un} и перейдите по ссылке-приглашению."
+                    f"Комната в отдельном боте — откройте @{un} по ссылке из приглашения."
                 )
             else:
                 await message.answer(
-                    "Эта комната работает в отдельном боте — откройте его по ссылке-приглашению."
+                    "Комната в отдельном боте — откройте его по ссылке из приглашения."
                 )
             return
         options = generate_random_nickname_options(NICKNAME_OPTIONS_COUNT)
@@ -700,11 +701,11 @@ def register_anonymous_handlers(
             return
         data = await state.get_data()
         if data.get("pending_invite_id") != invite_id:
-            await query.answer("Сессия устарела. Откройте ссылку-приглашение снова.", show_alert=True)
+            await query.answer("Сессия устарела. Откройте приглашение снова.", show_alert=True)
             return
         choices = data.get("nickname_choices") or []
         if idx < 0 or idx >= len(choices):
-            await query.answer("Кнопки устарели. Запросите новую ссылку или откройте приглашение снова.", show_alert=True)
+            await query.answer("Список устарел. Откройте приглашение снова или обновите варианты.", show_alert=True)
             return
         nick = choices[idx]
         try:
@@ -743,7 +744,7 @@ def register_anonymous_handlers(
             return
         data = await state.get_data()
         if data.get("pending_invite_id") != invite_id:
-            await query.answer("Сессия устарела. Откройте ссылку-приглашение снова.", show_alert=True)
+            await query.answer("Сессия устарела. Откройте приглашение снова.", show_alert=True)
             return
         options = generate_random_nickname_options(NICKNAME_OPTIONS_COUNT)
         await state.update_data(nickname_choices=options)
@@ -763,8 +764,7 @@ def register_anonymous_handlers(
         if message.text and message.text.startswith("/"):
             return
         await message.answer(
-            "Ник нельзя ввести вручную — выберите один из вариантов кнопками под предыдущим сообщением "
-            "или нажмите «Другие варианты»."
+            "Имя только из списка — нажмите кнопку под сообщением выше или «Другие варианты»."
         )
 
     @router.message(Cmd("п"), F.chat.type == "private", arf, F.photo)
@@ -809,12 +809,12 @@ def register_anonymous_handlers(
         # Дочерний бот: выходим из комнаты этого процесса (child_room_id), а не из «активной» в ЛС основного бота.
         rid = resolve_anonymous_room_for_dm(uid, child_room_id)
         if rid is None:
-            await message.answer("Вы не в анонимном чате.")
+            await message.answer("Вы не в комнате.")
             return
         if leave_room(uid, rid):
-            await message.answer("Вы вышли из анонимного чата.")
+            await message.answer("Вы вышли из комнаты.")
         else:
-            await message.answer("Вы не в анонимном чате.")
+            await message.answer("Вы не в комнате.")
 
     @router.message(ChekCommandFilter(), F.chat.type == "private", arf)
     async def cmd_anonymous_chek(message: Message):
@@ -931,17 +931,13 @@ def register_anonymous_handlers(
     async def cmd_delete_receipt_private_fallback(message: Message):
         if message.from_user and resolve_anonymous_room_for_dm(message.from_user.id, child_room_id):
             return
-        return await message.answer(
-            "В личке /удалить_чек доступна только внутри анонимного чата (по приглашению)."
-        )
+        return await message.answer("Команда доступна после входа по приглашению.")
 
     @router.message(ChekCommandFilter(), F.chat.type == "private")
     async def cmd_chek_private_fallback(message: Message):
         if message.from_user and resolve_anonymous_room_for_dm(message.from_user.id, child_room_id):
             return
-        return await message.answer(
-            "В личке /чек, /+ и /- доступны только внутри анонимного чата (по приглашению)."
-        )
+        return await message.answer("Команда доступна после входа по приглашению.")
 
     @router.message(Cmd("инфо", "info"), F.chat.type == "private", arf)
     async def get_anonymous_info_cmd(message: Message):
@@ -958,9 +954,7 @@ def register_anonymous_handlers(
 
     @router.message(Cmd("инфо", "info"), F.chat.type == "private")
     async def cmd_info_private_fallback(message: Message):
-        return await message.answer(
-            "В личке /инфо и /info доступны только внутри анонимного чата (по приглашению)."
-        )
+        return await message.answer("Команда доступна после входа по приглашению.")
 
     @router.message(Cmd("чеки_сегодня", "cheki_segodnya"), F.chat.type == "private", arf)
     async def get_anonymous_all_today_receipts(message: Message):
@@ -989,9 +983,7 @@ def register_anonymous_handlers(
 
     @router.message(Cmd("чеки_сегодня", "cheki_segodnya"), F.chat.type == "private")
     async def cmd_cheki_private_fallback(message: Message):
-        return await message.answer(
-            "В личке /чеки_сегодня и /cheki_segodnya доступны только внутри анонимного чата (по приглашению)."
-        )
+        return await message.answer("Команда доступна после входа по приглашению.")
 
     @router.message(Cmd("помощь"), F.chat.type == "private", arf)
     async def cmd_anonymous_help(message: Message):
@@ -1003,9 +995,7 @@ def register_anonymous_handlers(
 
     @router.message(Cmd("помощь"), F.chat.type == "private")
     async def cmd_help_private_fallback(message: Message):
-        return await message.answer(
-            "В личке /помощь доступна только внутри анонимного чата (по приглашению)."
-        )
+        return await message.answer("Команда доступна после входа по приглашению.")
 
     @router.message(Cmd("delete"), F.chat.type == "private", arf)
     async def cmd_delete_anon(message: Message):
@@ -1094,7 +1084,7 @@ def register_anonymous_handlers(
             if resolve_anonymous_room_for_dm(message.from_user.id, child_room_id):
                 return
             await message.answer(
-                "Откройте этого бота по ссылке-приглашению (параметр start в ссылке)."
+                "Откройте бота по ссылке из приглашения."
             )
 
         @router.message(F.chat.type == "private")
@@ -1108,8 +1098,8 @@ def register_anonymous_handlers(
             if resolve_anonymous_room_for_dm(message.from_user.id, child_room_id):
                 return
             if message.text and message.text.startswith("/"):
-                await message.answer("Сначала перейдите по ссылке-приглашению.")
+                await message.answer("Сначала откройте ссылку из приглашения.")
                 return
             await message.answer(
-                "Этот бот только для анонимного чата. Используйте ссылку-приглашение."
+                "Этот бот для анонимной комнаты. Нужна ссылка-приглашение."
             )

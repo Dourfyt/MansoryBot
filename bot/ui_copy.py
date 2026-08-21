@@ -125,7 +125,7 @@ def info_footer(
 def anon_receipt_line(receipt_no: int, ts_fmt: str, nick: str, amount: float) -> str:
     return (
         f"{e_receipt()} <b>№{receipt_no}</b>  ·  <i>{ts_fmt}</i>\n"
-        f"👤 {nick}\n"
+        f"{nick}\n"
         f"{e_money_face()} <b>{format_money(amount)}</b>\n"
         f"{SEP}"
     )
@@ -205,15 +205,25 @@ def prompt_check_amount_html() -> str:
 
 # —— Анонимный чат ——
 ANON_HELP_HTML = (
-    f"<b>Команды комнаты</b>\n{SEP}\n\n"
-    f"<code>/delete</code> — убрать последнее сообщение\n"
-    f"<code>/инфо</code> — сводка\n"
-    f"<code>/чеки_сегодня</code> — файл за день\n"
-    f"<code>/помощь</code> — справка"
+    f"<b>Комната</b>\n{SEP}\n\n"
+    f"Пишите сюда — сообщения увидят участники под выбранным именем.\n"
+    f"<code>/delete</code> — убрать своё последнее\n"
+    f"<code>/инфо</code> — сводка по комнате\n"
+    f"<code>/чеки_сегодня</code> — выгрузка за день\n"
+    f"<code>/помощь</code> — эта справка"
 )
 
 ANON_NICK_PROMPT = (
-    f"{e_ring()} <b>Имя в чате</b>\n\n"
-    f"Его увидят участники.\n"
-    f"Выберите вариант или «Другие варианты»."
+    f"{e_ring()} <b>Имя в комнате</b>\n\n"
+    f"Формат: слова и эмодзи в конце.\n"
+    f"Его увидят все участники.\n"
+    f"Выберите вариант или обновите список."
 )
+
+ANON_WELCOME_INTRO = (
+    "Вы в комнате как <b>«{nick}»</b>.\n\n"
+    "Дальше пишите сюда — текст и медиа уйдут участникам.\n"
+)
+
+ANON_JOIN_NOTIFY = "«{nick}» зашёл в комнату · сейчас <b>{count}</b>"
+
