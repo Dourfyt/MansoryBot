@@ -131,8 +131,16 @@ async def main() -> None:
     if not ANONYMOUS_CHATS_ENABLED:
         logger.info(
             "Анонимные чаты отключены (ANONYMOUS_CHATS_ENABLED=false). "
-            "Супервизор дочерних ботов не запускается."
+            "Супервизор дочерних ботов не запускается — контейнер в ожидании."
         )
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, stop.set)
+            except NotImplementedError:
+                pass
+        await stop.wait()
         return
     init_schema()
     active: Dict[int, ChildBotHandle] = {}

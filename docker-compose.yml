@@ -1,14 +1,12 @@
-# Полный стек: PostgreSQL + бот + админка (одна БД).
+# Полный стек: PostgreSQL + бот + админка + anon-child (одна БД).
 #
 # Подготовка: скопируйте .env.example в .env и заполните BOT_TOKEN, секреты и т.д.
 #
 # Запуск:
 #   docker compose up -d --build
 #
-# Анонимные чаты временно отключены (ANONYMOUS_CHATS_ENABLED=false). Чтобы включить:
-#   1) ANONYMOUS_CHATS_ENABLED=true в .env для bot/admin
-#   2) docker compose --profile anonymous up -d
-# Сервис anon-child: polling дочерних ботов, опрос БД каждые ANONYMOUS_CHILD_POLL_INTERVAL с (по умолчанию 15).
+# Анонимные чаты: ANONYMOUS_CHATS_ENABLED=true в .env (по умолчанию false).
+# Сервис anon-child всегда в стеке; при false сразу выходит. Опрос БД: ANONYMOUS_CHILD_POLL_INTERVAL с (по умолчанию 15).
 #
 # Тесты (нужен поднятый postgres; в .env для сети Docker задайте DATABASE_URL с хостом postgres):
 #   docker compose up -d postgres
@@ -61,9 +59,8 @@ services:
     ports:
       - "8765:8765"
 
-  # Дочерние боты анонимных чатов (токены из CRM). Профиль anonymous — только при включённой фиче.
+  # Дочерние боты анонимных чатов (токены из CRM). При ANONYMOUS_CHATS_ENABLED=false процесс сразу выходит.
   anon-child:
-    profiles: [anonymous]
     build:
       context: .
       dockerfile: Dockerfile
@@ -78,7 +75,7 @@ services:
       - .env
     environment:
       TZ: ${TZ:-Europe/Moscow}
-      ANONYMOUS_CHATS_ENABLED: ${ANONYMOUS_CHATS_ENABLED:-true}
+      ANONYMOUS_CHATS_ENABLED: ${ANONYMOUS_CHATS_ENABLED:-false}
       DATABASE_URL: postgresql://mansory_admin:cxoEmYHd5c5FYWT6hMoDezrNaUPDQBebDIG3CjBeCtBbNcCjSnQAmugnjNLdzqig@postgres:5432/crm
       ANONYMOUS_CHILD_POLL_INTERVAL: ${ANONYMOUS_CHILD_POLL_INTERVAL:-15}
       BROADCAST_RELAY_URL: http://bot:8765/broadcast/relay-anonymous-photo-check
