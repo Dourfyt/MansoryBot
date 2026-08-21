@@ -113,6 +113,7 @@ from bot.anonymous_chat import (
 )
 from bot.anonymous_relay_handlers import (
     is_anonymous_private_command,
+    register_anonymous_handlers,
     relay_anonymous_photo_bytes_to_peers,
     try_anonymous_private_message,
 )
@@ -1895,9 +1896,9 @@ async def cmd_start_connected_group(message: Message):
             "• /стопрек — предупредить об остановке приема платежей по реквизитам\n\n"
         )
 
-@router.message(CmdStart())
+@router.message(CmdStart(magic=F.args.is_(None)))
 async def cmd_start_private(message: Message):
-    """Обработчик команды /start в приватных чатах"""
+    """Обработчик /start в ЛС без deep link. Инвайты (?start=token) — anonymous router."""
     if message.chat.type != "private":
         return
     if not message.from_user:
@@ -3499,6 +3500,16 @@ async def main():
     setup_scheduler()
     group_manager.refresh_broadcast_chats()
     broadcast_task = asyncio.create_task(run_broadcast_server())
+    if ANONYMOUS_CHATS_ENABLED:
+        anon_router = Router(name="anonymous_master")
+        register_anonymous_handlers(
+            anon_router,
+            master_mode=True,
+            include_private_catchall=False,
+            child_room_id=None,
+        )
+        # До основного router, чтобы /start <token> не перехватывался cmd_start_private.
+        dp.include_router(anon_router)
     dp.include_router(router)
     _register_tron_incoming_middleware()
     from bot.update_log import register_update_logging

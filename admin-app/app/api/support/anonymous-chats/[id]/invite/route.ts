@@ -10,13 +10,9 @@ const INVITE_TTL_MINUTES = 180;
 const INVITE_USER_MESSAGE =
   '🤖 Ссылка-приглашение активна 180 минут и позволяет одному пользователю подключиться к этому чату\n\n';
 
+/** Только [0-9a-f] — безопасный алфавит для Telegram deep link (?start=). */
 function generateInviteToken(): string {
-  return crypto
-    .randomBytes(12)
-    .toString('base64url')
-    .replace(/\+/g, 'x')
-    .replace(/\//g, 'y')
-    .slice(0, 32);
+  return crypto.randomBytes(16).toString('hex');
 }
 
 export async function POST(
@@ -51,12 +47,12 @@ export async function POST(
   const childUsername = exists[0]?.child_bot_username?.trim();
 
   const token = generateInviteToken();
-  const expiresAt = new Date(Date.now() + INVITE_TTL_MINUTES * 60 * 1000);
+  // Срок считаем в Postgres (NOW()), иначе UTC ISO vs TZ контейнера (MSK) даёт «уже истекло».
   const { rows } = await query<{ token: string; expires_at: string }>(
     `INSERT INTO anonymous_chat_invites (anonymous_chat_id, token, expires_at)
-     VALUES ($1, $2, $3)
+     VALUES ($1, $2, NOW() + ($3::int * INTERVAL '1 minute'))
      RETURNING token, expires_at`,
-    [chatId, token, expiresAt.toISOString()]
+    [chatId, token, INVITE_TTL_MINUTES]
   );
   const row = rows[0];
   if (!row) {
@@ -77,7 +73,8 @@ export async function POST(
     }
   }
 
-  const inviteUrl = `https://t.me/${username}?start=${encodeURIComponent(row.token)}`;
+  // hex-токен: encodeURIComponent не нужен; Telegram start — только A-Z a-z 0-9 _ -
+  const inviteUrl = `https://t.me/${username}?start=${row.token}`;
   const invite_text = INVITE_USER_MESSAGE + inviteUrl;
 
   await appendAudit(crmUserId, 'anonymous_chat_invite', `${chatId}`);

@@ -149,6 +149,14 @@ def lookup_valid_invite(token: str) -> Optional[Tuple[int, int]]:
     t = (token or "").strip()
     if not t:
         return None
+    # На случай если клиент/прокси отдал percent-encoding
+    if "%" in t:
+        try:
+            from urllib.parse import unquote
+
+            t = unquote(t).strip()
+        except Exception:
+            pass
     with connection() as conn:
         cur = conn.cursor()
         cur.execute(

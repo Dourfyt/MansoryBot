@@ -599,7 +599,7 @@ async def try_anonymous_private_message(
         if message.text and is_anonymous_private_command(message.text):
             return True
         return False
-    # Основной бот не ведёт анонимные чаты: только подсказка перейти в бот комнаты (если есть child).
+    # Основной бот не ведёт комнаты с дочерним ботом — только подсказка.
     if master_mode and child_room_id is None:
         room_id = resolve_anonymous_room_for_dm(message.from_user.id, None)
         if room_id and room_has_child_bot(room_id):
@@ -613,10 +613,13 @@ async def try_anonymous_private_message(
                     "Анонимные чаты ведутся в отдельном боте — откройте его по ссылке-приглашению."
                 )
             return True
-        return False
-    room_id = resolve_anonymous_room_for_dm(message.from_user.id, child_room_id)
-    if not room_id:
-        return False
+        if not room_id:
+            return False
+        # Комната на мастер-боте (без child) — релей ниже.
+    else:
+        room_id = resolve_anonymous_room_for_dm(message.from_user.id, child_room_id)
+        if not room_id:
+            return False
     if message.text and message.text.startswith("/"):
         return True
     nick = get_relay_display_name(message.from_user.id, room_id)
@@ -655,6 +658,11 @@ def register_anonymous_handlers(
             await message.answer("Ссылка недействительна, уже использована или истекла.")
             return
         invite_id, room_id = found
+        if child_room_id is not None and int(room_id) != int(child_room_id):
+            await message.answer(
+                "Эта ссылка для другого анонимного бота. Откройте приглашение из настроек нужной комнаты."
+            )
+            return
         if master_mode and room_has_child_bot(room_id):
             un = get_child_bot_username_for_room(room_id)
             if un:
