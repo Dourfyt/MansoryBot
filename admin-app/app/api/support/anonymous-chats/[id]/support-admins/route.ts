@@ -6,7 +6,7 @@ import { anonymousChatsEmptyGetResponse } from '@/lib/anonymous-chats-feature';
 
 const LABEL_RE = /^[A-Z]$/;
 
-def supportDisplayNickname(label: string): string {
+function supportDisplayNickname(label: string): string {
   return `Саппорт ${label} 🎧`;
 }
 
