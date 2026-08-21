@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Простой скрипт деплоя Balenciaga Bot Admin Panel
+# Простой скрипт деплоя Mansory Bot Admin Panel
 # Domain: jsanfasfnkajfkasjkf.ru
 
 set -e  # Останавливаем выполнение при ошибке
 
-echo "🚀 Starting deployment of Balenciaga Bot Admin Panel..."
+echo "🚀 Starting deployment of Mansory Bot Admin Panel..."
 
 # Проверяем, что запускаем от root
 if [ "$EUID" -ne 0 ]; then
@@ -37,15 +37,15 @@ echo "🏗️ Building application..."
 npm run build
 
 echo "🔧 Creating systemd service..."
-cat > /etc/systemd/system/balenciaga-admin.service << 'EOF'
+cat > /etc/systemd/system/mansory-admin.service << 'EOF'
 [Unit]
-Description=Balenciaga Bot Admin Panel
+Description=Mansory Bot Admin Panel
 After=network.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/balenciaga-admin
+WorkingDirectory=/opt/mansory-admin
 ExecStart=/usr/bin/npm start
 Restart=always
 RestartSec=10
@@ -56,20 +56,20 @@ Environment=DATABASE_PATH=/opt/databases/group_connections.db
 WantedBy=multi-user.target
 EOF
 
-echo "📁 Moving application to /opt/balenciaga-admin..."
+echo "📁 Moving application to /opt/mansory-admin..."
 # Создаем директорию и копируем файлы
-mkdir -p /opt/balenciaga-admin
-cp -r . /opt/balenciaga-admin/
-chown -R www-data:www-data /opt/balenciaga-admin
+mkdir -p /opt/mansory-admin
+cp -r . /opt/mansory-admin/
+chown -R www-data:www-data /opt/mansory-admin
 
 echo "🌐 Configuring nginx..."
-cat > /etc/nginx/sites-available/balenciaga-admin << 'EOF'
+cat > /etc/nginx/sites-available/mansory-admin << 'EOF'
 server {
     listen 80;
     server_name jsanfasfnkajfkasjkf.ru www.jsanfasfnkajfkasjkf.ru;
 
-    access_log /var/log/nginx/balenciaga-admin.access.log;
-    error_log /var/log/nginx/balenciaga-admin.error.log;
+    access_log /var/log/nginx/mansory-admin.access.log;
+    error_log /var/log/nginx/mansory-admin.error.log;
 
     location / {
         proxy_pass http://localhost:3000;
@@ -92,13 +92,13 @@ server {
 EOF
 
 # Включаем сайт
-ln -sf /etc/nginx/sites-available/balenciaga-admin /etc/nginx/sites-enabled/
+ln -sf /etc/nginx/sites-available/mansory-admin /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
 
 echo "🚀 Starting services..."
 systemctl daemon-reload
-systemctl enable balenciaga-admin
-systemctl start balenciaga-admin
+systemctl enable mansory-admin
+systemctl start mansory-admin
 systemctl restart nginx
 
 echo "🔒 Obtaining SSL certificate..."
@@ -112,9 +112,9 @@ echo ""
 echo "🌍 Your admin panel is now available at: https://jsanfasfnkajfkasjkf.ru"
 echo ""
 echo "🔧 Management commands:"
-echo "  sudo systemctl status balenciaga-admin    # Check status"
-echo "  sudo systemctl restart balenciaga-admin  # Restart service"
-echo "  sudo journalctl -u balenciaga-admin -f   # View logs"
+echo "  sudo systemctl status mansory-admin    # Check status"
+echo "  sudo systemctl restart mansory-admin  # Restart service"
+echo "  sudo journalctl -u mansory-admin -f   # View logs"
 echo ""
 echo "📊 Current status:"
-systemctl status balenciaga-admin --no-pager -l
+systemctl status mansory-admin --no-pager -l

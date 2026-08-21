@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { appendAudit, getSessionFromRequest } from '@/lib/auth';
-import { assertAdminOrSupportPermission } from '@/lib/api-guard';
+import { assertAnonymousChatsApi } from '@/lib/api-guard';
+import { anonymousChatsEmptyGetResponse } from '@/lib/anonymous-chats-feature';
 
 export async function GET(request: NextRequest) {
-  const denied = await assertAdminOrSupportPermission(request, 'anonymous');
+  const empty = anonymousChatsEmptyGetResponse({ chats: [] });
+  if (empty) return empty;
+  const denied = await assertAnonymousChatsApi(request);
   if (denied) return denied;
 
   const q = (request.nextUrl.searchParams.get('q') ?? '').trim();
@@ -54,7 +57,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const denied = await assertAdminOrSupportPermission(request, 'anonymous');
+  const denied = await assertAnonymousChatsApi(request);
   if (denied) return denied;
   const session = await getSessionFromRequest(request);
   if (!session) {

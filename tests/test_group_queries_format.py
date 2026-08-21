@@ -26,9 +26,9 @@ def test_format_info_message_html_minimal_snapshot() -> None:
     }
     text = format_info_message_html(snapshot, daily_report=False)
     assert "Чек №1" in text
-    assert "100.00" in text
-    assert "Оборот за сегодня" in text
-    assert "2.00" in text
+    assert "100,00" in text
+    assert "Оборот за день" in text
+    assert "2,00" in text
 
 
 def test_format_info_daily_header() -> None:
@@ -44,4 +44,6 @@ def test_format_info_daily_header() -> None:
         "remaining": 0.0,
     }
     text = format_info_message_html(snapshot, daily_report=True)
-    assert "Ежедневный отчёт" in text
+    assert "Сводка ·" in text
+    assert "5192707317329575611" in text
+    assert "5192964774849165242" in text

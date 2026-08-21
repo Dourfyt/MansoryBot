@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { appendAudit, getSessionFromRequest } from '@/lib/auth';
-import { assertAdminOrSupportPermission } from '@/lib/api-guard';
+import { assertAnonymousChatsApi } from '@/lib/api-guard';
 
 export async function PATCH(
   request: NextRequest,
   context: { params: { id: string } }
 ) {
-  const denied = await assertAdminOrSupportPermission(request, 'anonymous');
+  const denied = await assertAnonymousChatsApi(request);
   if (denied) return denied;
   const session = await getSessionFromRequest(request);
   if (!session) {
@@ -65,7 +65,7 @@ export async function DELETE(
   request: NextRequest,
   context: { params: { id: string } }
 ) {
-  const denied = await assertAdminOrSupportPermission(request, 'anonymous');
+  const denied = await assertAnonymousChatsApi(request);
   if (denied) return denied;
   const session = await getSessionFromRequest(request);
   if (!session) {

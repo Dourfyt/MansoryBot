@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
-import { assertAdminOrSupportPermission } from '@/lib/api-guard';
+import { assertAnonymousChatsApi } from '@/lib/api-guard';
+import { anonymousChatsEmptyGetResponse } from '@/lib/anonymous-chats-feature';
 
 export async function GET(
   request: NextRequest,
   context: { params: { id: string } }
 ) {
-  const denied = await assertAdminOrSupportPermission(request, 'anonymous');
+  const empty = anonymousChatsEmptyGetResponse({ messages: [] });
+  if (empty) return empty;
+  const denied = await assertAnonymousChatsApi(request);
   if (denied) return denied;
 
   const chatId = parseInt(context.params.id, 10);

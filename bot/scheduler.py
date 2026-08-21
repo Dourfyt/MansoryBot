@@ -10,6 +10,11 @@ import os
 from datetime import datetime
 import logging
 from logging.handlers import TimedRotatingFileHandler
+from aiogram.exceptions import TelegramBadRequest
+
+from .config import ANONYMOUS_CHATS_ENABLED
+from .stickers import MORNING_STICKER_FILE_ID
+from .telegram_html import strip_tg_emoji_tags
 from .loader import bot, initialize_db
 from .pg import list_group_chat_ids
 from .group_queries import (
@@ -162,6 +167,45 @@ async def send_message_optimized(chat_id, message, parse_mode=None, is_sticker=F
                     await bot_instance.send_message(chat_id, message, parse_mode=parse_mode)
                 logger.info(f"✅ Сообщение успешно отправлено в чат {chat_id} через {bot_names[bot_index]}")
                 return True
+            except TelegramBadRequest as e:
+                error_str = str(e)
+                last_error = error_str
+                if (
+                    not is_sticker
+                    and parse_mode == "HTML"
+                    and "ENTITY_TEXT_INVALID" in error_str
+                    and "<tg-emoji" in message
+                ):
+                    fallback = strip_tg_emoji_tags(message)
+                    try:
+                        await bot_instance.send_message(
+                            chat_id, fallback, parse_mode="HTML"
+                        )
+                        logger.warning(
+                            "⚠️ Чат %s: повтор без custom emoji (ENTITY_TEXT_INVALID)",
+                            chat_id,
+                        )
+                        return True
+                    except Exception as retry_err:
+                        last_error = str(retry_err)
+                        log_error_details(logger.error, retry_err)
+                log_error_details(logger.error, e)
+                logger.error(
+                    f"🚨 Ошибка от {bot_names[bot_index]} для чата {chat_id} "
+                    f"(попытка {attempt + 1}/{SCHEDULER_CONFIG['MAX_RETRY_ATTEMPTS']}):"
+                )
+                if "bot was kicked" in error_str or "bot was blocked" in error_str:
+                    logger.warning(
+                        f"🔄 {bot_names[bot_index]} заблокирован/исключен для чата {chat_id}"
+                    )
+                    break
+                if "Too Many Requests" in error_str:
+                    if attempt < SCHEDULER_CONFIG["MAX_RETRY_ATTEMPTS"] - 1:
+                        await asyncio.sleep(SCHEDULER_CONFIG["ERROR_DELAY_LONG"])
+                    continue
+                if attempt < SCHEDULER_CONFIG["MAX_RETRY_ATTEMPTS"] - 1:
+                    await asyncio.sleep(SCHEDULER_CONFIG["ERROR_DELAY_SHORT"])
+                continue
             except Exception as e:
                 error_str = str(e)
                 last_error = error_str
@@ -221,10 +265,11 @@ SCHEDULER_CONFIG = {
     'ERROR_DELAY_LONG': float(os.getenv('ERROR_DELAY_LONG', '10')),           # Длинная задержка при превышении лимитов
 }
 
-async def send_daily_info_if_receipts():
-    """Отправляет информацию о чеках за день, если был добавлен хотя бы один чек"""
+async def send_day_info_if_receipts(*, intermediate: bool = False):
+    """Отправляет сводку за день в группы с чеками (итоговая или промежуточная)."""
     start_time = datetime.now()
-    logger.info("🚀 Запуск функции send_daily_info_if_receipts")
+    kind_label = "промежуточной" if intermediate else "ежедневной"
+    logger.info("🚀 Запуск send_day_info_if_receipts (%s)", kind_label)
 
     today = datetime.now().strftime('%Y-%m-%d')
 
@@ -232,8 +277,8 @@ async def send_daily_info_if_receipts():
     logger.info("🧹 Кэш ботов сохранен для оптимизации")
 
     try:
-        logger.info("📊 Начинаем отправку ежедневной информации по всем чатам")
-        print("[📊] Начинаем отправку ежедневной информации по всем чатам...")
+        logger.info("📊 Начинаем отправку %s информации по всем чатам", kind_label)
+        print(f"[📊] Начинаем отправку {kind_label} информации по всем чатам...")
 
         chat_ids = list_group_chat_ids()
         total_chats = len(chat_ids)
@@ -253,8 +298,16 @@ async def send_daily_info_if_receipts():
 
                 if receipts_today > 0:
                     chats_with_receipts += 1
-                    logger.info(f"📤 Отправляем ежедневную информацию в чат {chat_id} (чеков: {receipts_today})")
-                    print(f"[📤] [{i}/{total_chats}] Отправляем ежедневную информацию в чат {chat_id} (чеков за день: {receipts_today})")
+                    logger.info(
+                        "📤 Отправляем %s информацию в чат %s (чеков: %s)",
+                        kind_label,
+                        chat_id,
+                        receipts_today,
+                    )
+                    print(
+                        f"[📤] [{i}/{total_chats}] Отправляем {kind_label} информацию в чат {chat_id} "
+                        f"(чеков за день: {receipts_today})"
+                    )
 
                     snapshot = build_info_snapshot(chat_id, today)
                     if snapshot is None:
@@ -263,7 +316,11 @@ async def send_daily_info_if_receipts():
                         print(f"[❌] [{i}/{total_chats}] Нет настроек для чата {chat_id}")
                         continue
 
-                    response = format_info_message_html(snapshot, daily_report=True)
+                    response = format_info_message_html(
+                        snapshot,
+                        daily_report=not intermediate,
+                        intermediate=intermediate,
+                    )
                     logger.info(f"📤 Чат {chat_id}: начинаем отправку сообщения (длина: {len(response)} символов)")
                     success = await send_message_optimized(chat_id, response, parse_mode="HTML")
 
@@ -294,7 +351,8 @@ async def send_daily_info_if_receipts():
                 print(f"[!] Критическая ошибка при обработке чата {chat_id}: {e}")
                 continue
 
-        await send_daily_anonymous_info_if_receipts()
+        if ANONYMOUS_CHATS_ENABLED:
+            await send_day_anonymous_info_if_receipts(intermediate=intermediate)
 
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
@@ -303,7 +361,7 @@ async def send_daily_info_if_receipts():
         logger.info(f"📊 Итоговая статистика: успешно: {successful_sends}, ошибок: {failed_sends}, чатов с чеками: {chats_with_receipts}")
         success_rate = (successful_sends / total_chats * 100) if total_chats > 0 else 0
         result_msg = (
-            f"✅ Ежедневная информация обработана! Успешно: {successful_sends}, Ошибок: {failed_sends}, "
+            f"✅ {kind_label.capitalize()} информация обработана! Успешно: {successful_sends}, Ошибок: {failed_sends}, "
             f"Чатов с чеками: {chats_with_receipts}, Всего: {total_chats}, Успешность: {success_rate:.1f}%, "
             f"Время выполнения: {duration:.2f} сек"
         )
@@ -311,16 +369,29 @@ async def send_daily_info_if_receipts():
         print(f"[{result_msg}]")
 
     except Exception as e:
-        error_msg = f"💥 Критическая ошибка в send_daily_info_if_receipts: {e}"
+        error_msg = f"💥 Критическая ошибка в send_day_info_if_receipts ({kind_label}): {e}"
         logger.error(error_msg)
         logger.exception("Полный стек ошибки:")
         print(f"[{error_msg}]")
 
 
-async def send_daily_anonymous_info_if_receipts():
-    """Ежедневный отчёт по анонимным комнатам: каждому участнику в ЛС (дочерний бот, если задан)."""
+async def send_daily_info_if_receipts():
+    """Итоговая сводка за день (20:00 МСК)."""
+    await send_day_info_if_receipts(intermediate=False)
+
+
+async def send_intermediate_day_info_if_receipts():
+    """Промежуточная сводка за день (13:00 и 18:00 МСК)."""
+    await send_day_info_if_receipts(intermediate=True)
+
+
+async def send_day_anonymous_info_if_receipts(*, intermediate: bool = False):
+    """Сводка по анонимным комнатам: каждому участнику в ЛС (дочерний бот, если задан)."""
+    if not ANONYMOUS_CHATS_ENABLED:
+        return
     start_time = datetime.now()
-    logger.info("🚀 Запуск send_daily_anonymous_info_if_receipts")
+    kind_label = "промежуточной" if intermediate else "ежедневной"
+    logger.info("🚀 Запуск send_day_anonymous_info_if_receipts (%s)", kind_label)
     today = anonymous_today_msk_date_str()
     try:
         room_ids = list_active_anonymous_room_ids()
@@ -338,7 +409,11 @@ async def send_daily_anonymous_info_if_receipts():
                 if snapshot is None:
                     logger.warning(f"Анонимная комната {room_id}: нет снимка (неактивна?)")
                     continue
-                response = format_anonymous_info_html(snapshot, daily_report=True)
+                response = format_anonymous_info_html(
+                    snapshot,
+                    daily_report=not intermediate,
+                    intermediate=intermediate,
+                )
                 members = list_member_telegram_ids_for_room(room_id)
                 if not members:
                     logger.warning(f"Анонимная комната {room_id}: нет участников для рассылки")
@@ -373,12 +448,15 @@ async def send_daily_anonymous_info_if_receipts():
                 continue
         duration = (datetime.now() - start_time).total_seconds()
         logger.info(
-            f"📊 Анонимные ежедневные отчёты: комнат с чеками={rooms_with_receipts}, "
-            f"отправок ок={successful_member_sends}, ошибок={failed_member_sends}, "
-            f"время={duration:.2f} с"
+            "📊 Анонимные %s отчёты: комнат с чеками=%s, отправок ок=%s, ошибок=%s, время=%.2f с",
+            kind_label,
+            rooms_with_receipts,
+            successful_member_sends,
+            failed_member_sends,
+            duration,
         )
     except Exception as e:
-        logger.error(f"💥 Критическая ошибка в send_daily_anonymous_info_if_receipts: {e}")
+        logger.error("💥 Критическая ошибка в send_day_anonymous_info_if_receipts (%s): %s", kind_label, e)
         logger.exception("Полный стек:")
 
 
@@ -393,8 +471,6 @@ async def send_morning_sticker():
         logger.info("🌅 Начинаем отправку утреннего стикера во все чаты")
         print("[🌅] Отправляем утренний стикер во все чаты...")
 
-        message_text = "CAACAgIAAxkBAAKQkGigjQSfa96fJoGphBQT_N7mVtfSAALGewAC3t_ASP0jBidiRz_UNgQ"
-
         chat_ids = list_group_chat_ids()
         total_chats = len(chat_ids)
 
@@ -406,7 +482,9 @@ async def send_morning_sticker():
 
         for i, chat_id in enumerate(chat_ids, 1):
             try:
-                success = await send_message_optimized(chat_id, message_text, is_sticker=True)
+                success = await send_message_optimized(
+                    chat_id, MORNING_STICKER_FILE_ID, is_sticker=True
+                )
 
                 if success:
                     successful_sends += 1
@@ -491,7 +569,10 @@ async def reset_all_databases():
                 print(f"[❌] [{i}/{total_chats}] Ошибка при сбросе БД для чата {chat_id}: {e}")
                 continue
 
-        anonymous_room_ids = list_active_anonymous_room_ids()
+        if ANONYMOUS_CHATS_ENABLED:
+            anonymous_room_ids = list_active_anonymous_room_ids()
+        else:
+            anonymous_room_ids = []
         total_anon = len(anonymous_room_ids)
         anon_ok = 0
         anon_fail = 0
@@ -637,7 +718,7 @@ async def test_sticker_sending(limit=10):
     try:
         print(f"[🧪] Тестируем отправку стикеров в первые {limit} чатов...")
 
-        sticker_id = "CAACAgIAAxkBAAKQkGigjQSfa96fJoGphBQT_N7mVtfSAALGewAC3t_ASP0jBidiRz_UNgQ"
+        sticker_id = MORNING_STICKER_FILE_ID
 
         all_ids = list_group_chat_ids()
         test_chats = all_ids[:limit]
@@ -745,6 +826,8 @@ async def send_afternoon_dot():
 
 async def purge_stale_anonymous_chat_data_job():
     """Почасовая очистка истории и служебных таблиц анонимных чатов (старше 48 ч)."""
+    if not ANONYMOUS_CHATS_ENABLED:
+        return
     try:
         stats = await purge_stale_anonymous_chat_data_with_telegram(bot, retention_hours=48)
         total = sum(stats.values())
@@ -759,7 +842,9 @@ async def purge_stale_anonymous_chat_data_job():
 
 
 def setup_scheduler():
-    scheduler = AsyncIOScheduler(timezone=timezone("UTC"))
+    utc = timezone("UTC")
+    msk = timezone("Europe/Moscow")
+    scheduler = AsyncIOScheduler(timezone=utc)
 
     scheduler.add_job(
         func=reset_all_databases,
@@ -769,8 +854,19 @@ def setup_scheduler():
     
     scheduler.add_job(
         func=send_daily_info_if_receipts,
-        trigger=CronTrigger(hour=21, minute=30),  # 21:30 UTC
-        name="daily_info_send"
+        trigger=CronTrigger(hour=20, minute=0, timezone=msk),
+        name="daily_info_send",
+    )
+
+    scheduler.add_job(
+        func=send_intermediate_day_info_if_receipts,
+        trigger=CronTrigger(hour=13, minute=0, timezone=msk),
+        name="intermediate_info_send_13",
+    )
+    scheduler.add_job(
+        func=send_intermediate_day_info_if_receipts,
+        trigger=CronTrigger(hour=18, minute=0, timezone=msk),
+        name="intermediate_info_send_18",
     )
     
     scheduler.add_job(
@@ -779,20 +875,23 @@ def setup_scheduler():
         name="morning_sticker_send"
     )
 
-    scheduler.add_job(
-        func=purge_stale_anonymous_chat_data_job,
-        trigger=IntervalTrigger(hours=1),
-        name="purge_anonymous_chat_stale_48h",
-    )
+    if ANONYMOUS_CHATS_ENABLED:
+        scheduler.add_job(
+            func=purge_stale_anonymous_chat_data_job,
+            trigger=IntervalTrigger(hours=1),
+            name="purge_anonymous_chat_stale_48h",
+        )
     
     # send_afternoon_dot - тестовая функция, не регистрируем в планировщике
 
     scheduler.start()
     logger.info("✓ Планировщик автоматического сброса баз данных запущен в 23:59 UTC")
-    logger.info("✓ Планировщик ежедневной отправки информации запущен в 21:30 UTC")
+    logger.info("✓ Планировщик ежедневной отправки информации запущен в 20:00 Europe/Moscow")
+    logger.info("✓ Планировщик промежуточных итогов — 13:00 и 18:00 Europe/Moscow")
     logger.info("✓ Планировщик утреннего стикера запущен в 6:50 UTC")
     logger.info("✓ Планировщик очистки анонимных чатов (>48ч) — каждый час")
     print("[✓] Планировщик автоматического сброса баз данных запущен в 23:59 UTC")
-    print("[✓] Планировщик ежедневной отправки информации запущен в 21:30 UTC")
+    print("[✓] Планировщик ежедневной отправки информации запущен в 20:00 Europe/Moscow")
+    print("[✓] Планировщик промежуточных итогов — 13:00 и 18:00 Europe/Moscow")
     print("[✓] Планировщик утреннего стикера запущен в 6:50 UTC")
     print("[✓] Планировщик очистки анонимных чатов (>48ч) — каждый час")

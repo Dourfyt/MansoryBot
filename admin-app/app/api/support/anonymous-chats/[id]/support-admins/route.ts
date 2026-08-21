@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { appendAudit, getSessionFromRequest } from '@/lib/auth';
-import { assertAdminOrSupportPermission } from '@/lib/api-guard';
+import { assertAnonymousChatsApi } from '@/lib/api-guard';
+import { anonymousChatsEmptyGetResponse } from '@/lib/anonymous-chats-feature';
 
 const LABEL_RE = /^[A-Z]$/;
 
@@ -13,7 +14,9 @@ export async function GET(
   request: NextRequest,
   context: { params: { id: string } }
 ) {
-  const denied = await assertAdminOrSupportPermission(request, 'anonymous');
+  const empty = anonymousChatsEmptyGetResponse({ assigned: [], support_users: [] });
+  if (empty) return empty;
+  const denied = await assertAnonymousChatsApi(request);
   if (denied) return denied;
 
   const chatId = parseInt(context.params.id, 10);
@@ -60,7 +63,7 @@ export async function POST(
   request: NextRequest,
   context: { params: { id: string } }
 ) {
-  const denied = await assertAdminOrSupportPermission(request, 'anonymous');
+  const denied = await assertAnonymousChatsApi(request);
   if (denied) return denied;
   const session = await getSessionFromRequest(request);
   if (!session) {
@@ -151,7 +154,7 @@ export async function DELETE(
   request: NextRequest,
   context: { params: { id: string } }
 ) {
-  const denied = await assertAdminOrSupportPermission(request, 'anonymous');
+  const denied = await assertAnonymousChatsApi(request);
   if (denied) return denied;
   const session = await getSessionFromRequest(request);
   if (!session) {

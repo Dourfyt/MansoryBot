@@ -16,6 +16,9 @@ from aiogram import Bot as AiogramBot
 from aiogram.exceptions import TelegramBadRequest
 
 from . import config
+from . import ui_copy as ui
+from .ui_copy import format_money
+from .custom_emojis import e_bars
 from .group_queries import _normalize_ts, format_ts_ru_msk
 from .pg import connection
 
@@ -1348,39 +1351,38 @@ def get_bot_display_label_for_anonymous_room(anonymous_chat_id: int) -> str:
     return _resolve_anon_bot_title_label(has_child, child_fn)
 
 
-def format_anonymous_info_html(snapshot: Dict[str, Any], daily_report: bool = False) -> str:
-    """Текст /инфо для анонимной комнаты или ежедневной рассылки."""
+def format_anonymous_info_html(
+    snapshot: Dict[str, Any],
+    daily_report: bool = False,
+    intermediate: bool = False,
+) -> str:
+    """Текст /инфо для анонимной комнаты, ежедневной или промежуточной рассылки."""
     rows = snapshot["rows"]
     sum_today = snapshot["sum_today"]
     sum_all = snapshot["sum_all"]
     bot_title = _escape_html(str(snapshot.get("bot_label") or ANONYMOUS_CHAT_TITLE_FALLBACK))
     header = ""
-    if daily_report:
-        header = (
-            f"📅 <b>Ежедневный отчёт за {datetime.now(_MSK_ANON).strftime('%d.%m.%Y')}</b>\n\n"
-        )
+    if intermediate:
+        header = ui.intermediate_report_header_html()
+    elif daily_report:
+        header = ui.daily_report_header_html()
     if not rows:
         return (
             f"{header}"
-            f"📅 <b>{bot_title}</b>\n\n"
-            f"За сегодня чеков нет.\n\n"
+            f"<b>{bot_title}</b>\n\n"
+            f"<i>Сегодня чеков ещё не было.</i>\n"
         )
     lines: List[str] = []
     for receipt_no, amount, ts, who in rows:
         ts_fmt = format_ts_ru_msk(ts)
         nick = _escape_html(str(who))
-        lines.append(
-            f"<b>🧾 Чек №{receipt_no} | {ts_fmt}</b>\n"
-            f"👤 Ник: <b>{nick}</b>\n"
-            f"🤑 Сумма: <b>{float(amount):.2f}</b>\n"
-            f"<b>_____</b>"
-        )
+        lines.append(ui.anon_receipt_line(receipt_no, ts_fmt, nick, float(amount)))
     text = "\n".join(lines)
     return (
         f"{header}"
-        f"📅 <b>{bot_title}</b>\n\n"
-        f"Последние 15 чеков:\n{text}\n\n"
-        f"📦 <b>Сумма всех чеков за сегодня:</b> {sum_today:.2f}\n"
+        f"<b>{bot_title}</b>\n\n"
+        f"<b>Последние чеки</b>\n{text}\n"
+        f"{e_bars()} Итого за день: <b>{format_money(sum_today)}</b>\n"
     )
 
 
@@ -1452,7 +1454,7 @@ def build_anonymous_cheki_today_html(anonymous_chat_id: int, today: str) -> Opti
             "<tr>"
             f"<td>{int(receipt_no)}</td>"
             f"<td>{html_lib.escape(ts_fmt)}</td>"
-            f"<td>{float(amount):.2f}</td>"
+            f"<td>{format_money(amount)}</td>"
             f"<td>{html_lib.escape(str(who))}</td>"
             "</tr>"
         )
@@ -1472,7 +1474,7 @@ th {{ background: #171a21; }}
 </style></head>
 <body>
 <h1>🧾 Чеки за {html_lib.escape(day_fmt)} — {html_lib.escape(title)}</h1>
-<p class="summary">{html_lib.escape(bot_label)} · <b>Сумма за день: {total:.2f}</b></p>
+<p class="summary">{html_lib.escape(bot_label)} · <b>Сумма за день: {format_money(total)}</b></p>
 <table>
 <thead><tr><th>№</th><th>Время</th><th>Сумма</th><th>Никнейм</th></tr></thead>
 <tbody>{table_body}</tbody>

@@ -78,13 +78,16 @@ export default function AdminPanel() {
   const [headerRefreshing, setHeaderRefreshing] = useState(false);
   /** Вкладка под статистикой: связки CRM vs анонимные чаты */
   const [mainTab, setMainTab] = useState<'connections' | 'anonymous'>('connections');
+  const [anonymousChatsFeature, setAnonymousChatsFeature] = useState(false);
 
   const canPanel = (key: keyof SupportPermissions) => {
     if (panelRole === 'admin') return true;
     return !!(panelPerms && panelPerms[key]);
   };
 
-  const showMainTabs = canPanel('connections') && canPanel('anonymous');
+  const canAnonymousPanel = anonymousChatsFeature && canPanel('anonymous');
+
+  const showMainTabs = canPanel('connections') && canAnonymousPanel;
 
   const setMainTabAndUrl = (tab: 'connections' | 'anonymous') => {
     setMainTab(tab);
@@ -106,6 +109,7 @@ export default function AdminPanel() {
         const d = await res.json();
         setPanelRole(d.role === 'admin' ? 'admin' : 'support');
         setPanelPerms(d.permissions ?? null);
+        setAnonymousChatsFeature(!!d.features?.anonymousChats);
         setIsAdmin(d.role === 'admin');
       } catch {
         setIsAdmin(false);
@@ -122,9 +126,10 @@ export default function AdminPanel() {
     if (typeof window === 'undefined') return;
     const p = new URLSearchParams(window.location.search);
     if (p.get('tab') !== 'anonymous') return;
-    const anonOk = panelRole === 'admin' || !!panelPerms?.anonymous;
+    const anonOk =
+      anonymousChatsFeature && (panelRole === 'admin' || !!panelPerms?.anonymous);
     if (anonOk) setMainTab('anonymous');
-  }, [sessionReady, panelRole, panelPerms]);
+  }, [sessionReady, panelRole, panelPerms, anonymousChatsFeature]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -587,7 +592,7 @@ export default function AdminPanel() {
                 <Link className="h-6 w-6 text-primary" />
               </div>
               <div className="min-w-0 flex-1">
-                <h1 className="text-xl sm:text-2xl font-bold truncate text-white">Balenciaga Bot Admin</h1>
+                <h1 className="text-xl sm:text-2xl font-bold truncate text-white">Mansory Bot Admin</h1>
                 <p className="text-sm text-gray-300 truncate">Панель управления</p>
               </div>
             </div>
@@ -722,7 +727,7 @@ export default function AdminPanel() {
       )}
 
       {/* Анонимные чаты (вкладка или только это право) */}
-      {canPanel('anonymous') && (!canPanel('connections') || mainTab === 'anonymous') && (
+      {canAnonymousPanel && (!canPanel('connections') || mainTab === 'anonymous') && (
         <main className="mobile-main mobile-container py-4 sm:py-6">
           <AnonymousChatsPanel enabled />
         </main>
@@ -782,7 +787,7 @@ export default function AdminPanel() {
             </div>
           )}
         </main>
-      ) : !canPanel('anonymous') ? (
+      ) : !canAnonymousPanel ? (
         <main className="mobile-main mobile-container py-8 sm:py-12">
           <p className="text-gray-400 text-center max-w-md mx-auto">
             У вас нет доступа к связкам групп. Откройте меню (☰) и выберите доступный раздел — например,

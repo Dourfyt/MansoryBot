@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Скрипт для запуска админ-панели Balenciaga Bot
+# Скрипт для запуска админ-панели Mansory Bot
 
-echo "🚀 Запуск админ-панели Balenciaga Bot..."
+echo "🚀 Запуск админ-панели Mansory Bot..."
 
 # Проверяем, что мы в правильной директории
 if [ ! -f "package.json" ]; then

@@ -11,7 +11,9 @@ from typing import Any, List, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
-from aiogram.filters import BaseFilter, Command, CommandObject, CommandStart, StateFilter
+from aiogram.filters import BaseFilter, CommandObject, StateFilter
+
+from bot.filters_cmd import Cmd, CmdStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -57,25 +59,52 @@ from bot.anonymous_chat import (
     reset_anonymous_room_by_staff,
     room_has_child_bot,
 )
-from bot.config import ADMINS
+from bot.config import ADMINS, ANONYMOUS_CHATS_ENABLED
+from bot import ui_copy as ui
+from bot.chek_parse import ChekCommandFilter, parse_chek_message
+from bot.ui_copy import CHEK_FORMAT_HINT, format_money
+from bot.custom_emojis import e_receipt, plain_receipt_prefix
 
 logger = logging.getLogger(__name__)
+
+_ANON_PRIVATE_COMMAND_NAMES = frozenset({
+    "п",
+    "leave",
+    "выйти",
+    "чек",
+    "+",
+    "-",
+    "удалить_чек",
+    "сброс",
+    "reset",
+    "инфо",
+    "info",
+    "чеки_сегодня",
+    "cheki_segodnya",
+    "помощь",
+    "delete",
+    "delete_all",
+    "deleteall",
+})
+
+
+def is_anonymous_private_command(text: str) -> bool:
+    """Команды анонимного чата в ЛС (без ответа, если фича выключена)."""
+    raw = (text or "").strip()
+    if not raw.startswith("/"):
+        return False
+    token = raw.split(maxsplit=1)[0]
+    if "@" in token:
+        token = token.split("@", 1)[0]
+    name = (token[1:] if token.startswith("/") else token).casefold()
+    if name == "start":
+        return len(raw.split(maxsplit=1)) > 1 and bool(raw.split(maxsplit=1)[1].strip())
+    return name in _ANON_PRIVATE_COMMAND_NAMES
 _MSK = ZoneInfo("Europe/Moscow")
 
 NICKNAME_OPTIONS_COUNT = 5
 
-_NICK_JOIN_PROMPT = (
-    "Выберите отображаемое имя для этого чата — его увидят другие участники.\n\n"
-    "Случайные варианты на английском с эмодзи. Нажмите кнопку или «Другие варианты»."
-)
-
-# Приветствие после входа и ответ на /помощь.
-_ANONYMOUS_HELP_TEXT = (
-    "Команды:\n\n"
-    "/delete — удалить своё последнее сообщение\n"
-    "/инфо или /info — информация по комнате\n"
-    "/чеки_сегодня или /cheki_segodnya — все чеки за сегодня (файл)"
-)
+_NICK_JOIN_PROMPT = ui.ANON_NICK_PROMPT
 
 
 def _nickname_invite_keyboard(invite_id: int, options: List[str]) -> InlineKeyboardMarkup:
@@ -89,9 +118,10 @@ def _nickname_invite_keyboard(invite_id: int, options: List[str]) -> InlineKeybo
 
 def _welcome_anon_room_text(nick: str) -> str:
     return (
-        f"Вы вошли как «{nick}». Пишите сообщения здесь — их увидят другие участники.\n\n"
-        "Можно отвечать на сообщения и отправлять медиа. Упоминания по @нику недоступны.\n\n"
-        f"{_ANONYMOUS_HELP_TEXT}"
+        f"Вы вошли как <b>«{html_escape(nick)}»</b>.\n\n"
+        "Пишите здесь — сообщения увидят участники.\n"
+        "Ответы — reply на сообщение.\n\n"
+        f"{ui.ANON_HELP_HTML}"
     )
 
 
@@ -102,7 +132,7 @@ async def _notify_room_anonymous_join(
     member_count: int,
 ) -> None:
     """Всем участникам комнаты (включая вошедшего): кто вошёл и сколько человек в чате."""
-    text = f"«{html_escape(nickname)}» вошёл в чат. Участников: {member_count}."
+    text = f"«{html_escape(nickname)}» вошёл в комнату · участников: <b>{member_count}</b>"
     for uid in list_member_telegram_ids_for_room(room_id):
         try:
             await bot.send_message(uid, text, parse_mode="HTML")
@@ -127,7 +157,7 @@ class AnonymousRoomFilter(BaseFilter):
 
 
 class AnonymousPlainPhotoAsCheckFilter(BaseFilter):
-    """Фото без команды в подписи: сценарий «как /п». Подпись /п обрабатывает Command('п') выше по цепочке."""
+    """Фото без команды в подписи: сценарий «как /п». Подпись /п обрабатывает Cmd('п') выше по цепочке."""
 
     def __init__(self, child_room_id: Optional[int] = None):
         self.child_room_id = child_room_id
@@ -544,8 +574,9 @@ async def _relay_receipt_added_to_peers(
     if not nick:
         return
     sign = "добавлен" if amount > 0 else "учтён"
-    body_plain = f"🧾 Чек №{receipt_no} на {amount} {sign} ({timestamp})"
-    html_line = format_relay_line(nick, body_plain)
+    body_plain = f"{plain_receipt_prefix()} Чек №{receipt_no} на {format_money(amount)} {sign} ({timestamp})"
+    body_html = f"{e_receipt()} Чек №{receipt_no} на {format_money(amount)} {sign} ({timestamp})"
+    html_line = f"<b>{html_escape(nick)}</b>: {body_html}"
     tg_bot = message.bot
     for peer_id in get_peer_telegram_ids(room_id, uid):
         try:
@@ -563,6 +594,10 @@ async def try_anonymous_private_message(
 ) -> bool:
     """Обработка ЛС в анонимной комнате. True — дальше support не вызывать."""
     if not message.from_user:
+        return False
+    if not ANONYMOUS_CHATS_ENABLED:
+        if message.text and is_anonymous_private_command(message.text):
+            return True
         return False
     # Основной бот не ведёт анонимные чаты: только подсказка перейти в бот комнаты (если есть child).
     if master_mode and child_room_id is None:
@@ -601,7 +636,7 @@ def register_anonymous_handlers(
     arf = AnonymousRoomFilter(child_room_id=child_room_id)
     plain_photo_filter = AnonymousPlainPhotoAsCheckFilter(child_room_id=child_room_id)
 
-    @router.message(CommandStart(deep_link=True), F.chat.type == "private")
+    @router.message(CmdStart(deep_link=True), F.chat.type == "private")
     async def cmd_start_anonymous_invite(message: Message, command: CommandObject, state: FSMContext):
         if not message.from_user:
             return
@@ -637,6 +672,7 @@ def register_anonymous_handlers(
         await message.answer(
             _NICK_JOIN_PROMPT,
             reply_markup=_nickname_invite_keyboard(invite_id, options),
+            parse_mode="HTML",
         )
 
     @router.callback_query(F.data.startswith("anp:"), StateFilter(AnonymousChatStates.waiting_nickname))
@@ -680,7 +716,7 @@ def register_anonymous_handlers(
         except Exception:
             logging.exception("Снятие клавиатуры после выбора ника")
         member_count = count_anonymous_room_members(_room_id)
-        await query.message.answer(_welcome_anon_room_text(nick))
+        await query.message.answer(_welcome_anon_room_text(nick), parse_mode="HTML")
         await _notify_room_anonymous_join(query.message.bot, _room_id, nick, member_count)
 
     @router.callback_query(F.data.startswith("anr:"), StateFilter(AnonymousChatStates.waiting_nickname))
@@ -723,7 +759,7 @@ def register_anonymous_handlers(
             "или нажмите «Другие варианты»."
         )
 
-    @router.message(Command("п"), F.chat.type == "private", arf, F.photo)
+    @router.message(Cmd("п"), F.chat.type == "private", arf, F.photo)
     async def cmd_anonymous_photo_check(message: Message):
         from bot.anonymous_photo_to_verifier import handle_anonymous_photo_check_command
 
@@ -742,7 +778,7 @@ def register_anonymous_handlers(
             message, master_mode=master_mode, child_room_id=child_room_id
         )
 
-    @router.message(Command("п"), F.chat.type == "private", arf, ~F.photo)
+    @router.message(Cmd("п"), F.chat.type == "private", arf, ~F.photo)
     async def cmd_anonymous_p_no_photo(message: Message):
         await message.answer("Команда /п должна быть отправлена вместе с фото (подпись к фото может содержать /п).")
 
@@ -755,8 +791,8 @@ def register_anonymous_handlers(
             message, master_mode=master_mode, child_room_id=child_room_id
         )
 
-    @router.message(Command("leave"), F.chat.type == "private")
-    @router.message(Command("выйти"), F.chat.type == "private")
+    @router.message(Cmd("leave"), F.chat.type == "private")
+    @router.message(Cmd("выйти"), F.chat.type == "private")
     async def cmd_leave_anonymous(message: Message, state: FSMContext):
         if not message.from_user:
             return
@@ -772,20 +808,18 @@ def register_anonymous_handlers(
         else:
             await message.answer("Вы не в анонимном чате.")
 
-    @router.message(Command("чек"), F.chat.type == "private", arf)
+    @router.message(ChekCommandFilter(), F.chat.type == "private", arf)
     async def cmd_anonymous_chek(message: Message):
         if not message.from_user or not message.text:
             return
-        parts = message.text.split()
-        if len(parts) != 2:
-            return await message.answer(
-                "Некорректный формат. Используйте: /чек 100.00 или /чек -50.00"
-            )
         try:
-            amount = float(parts[1])
+            amount, rate_value, percent_value = parse_chek_message(message.text)
         except ValueError:
+            return await message.answer(CHEK_FORMAT_HINT)
+        if rate_value is not None:
             return await message.answer(
-                "Сумма должна быть числом. Используйте: /чек 100.00 или /чек -50.00"
+                "Курс и процент в /чек доступны только в группах. "
+                "В анонимном чате: /чек <сумма>."
             )
         room_id = resolve_anonymous_room_for_dm(message.from_user.id, child_room_id)
         if not room_id:
@@ -797,10 +831,11 @@ def register_anonymous_handlers(
         sign = "добавлен" if amount > 0 else "учтён"
         await _relay_receipt_added_to_peers(message, room_id, no, amount, timestamp)
         return await message.answer(
-            f"🧾 Чек №{no} на {amount} {sign} ({timestamp})."
+            f"{e_receipt()} <b>№{no}</b> · <b>{format_money(amount)}</b> ({sign}) · <i>{timestamp}</i>",
+            parse_mode="HTML",
         )
 
-    @router.message(Command("удалить_чек"), F.chat.type == "private", arf)
+    @router.message(Cmd("удалить_чек"), F.chat.type == "private", arf)
     async def cmd_anonymous_delete_receipt(message: Message):
         if not message.from_user or not message.text:
             return
@@ -835,7 +870,7 @@ def register_anonymous_handlers(
             )
         return await message.answer("Комната недоступна.")
 
-    @router.message(Command("сброс", "reset"), F.chat.type == "private")
+    @router.message(Cmd("сброс", "reset"), F.chat.type == "private")
     async def cmd_anonymous_staff_reset(message: Message):
         """Сброс чеков в комнате (как reset_anonymous_receipts_for_room): админы и саппорты комнаты."""
         if not message.from_user:
@@ -884,7 +919,7 @@ def register_anonymous_handlers(
             f"Чеки в комнате сброшены (удалено записей: {stats['receipts_removed']})."
         )
 
-    @router.message(Command("удалить_чек"), F.chat.type == "private")
+    @router.message(Cmd("удалить_чек"), F.chat.type == "private")
     async def cmd_delete_receipt_private_fallback(message: Message):
         if message.from_user and resolve_anonymous_room_for_dm(message.from_user.id, child_room_id):
             return
@@ -892,15 +927,15 @@ def register_anonymous_handlers(
             "В личке /удалить_чек доступна только внутри анонимного чата (по приглашению)."
         )
 
-    @router.message(Command("чек"), F.chat.type == "private")
+    @router.message(ChekCommandFilter(), F.chat.type == "private")
     async def cmd_chek_private_fallback(message: Message):
         if message.from_user and resolve_anonymous_room_for_dm(message.from_user.id, child_room_id):
             return
         return await message.answer(
-            "В личке команда /чек доступна только внутри анонимного чата (войдите по приглашению)."
+            "В личке /чек, /+ и /- доступны только внутри анонимного чата (по приглашению)."
         )
 
-    @router.message(Command("инфо", "info"), F.chat.type == "private", arf)
+    @router.message(Cmd("инфо", "info"), F.chat.type == "private", arf)
     async def get_anonymous_info_cmd(message: Message):
         if not message.from_user:
             return
@@ -913,13 +948,13 @@ def register_anonymous_handlers(
             return await message.answer("Ошибка: комната не найдена.")
         return await message.answer(format_anonymous_info_html(snap), parse_mode="HTML")
 
-    @router.message(Command("инфо", "info"), F.chat.type == "private")
+    @router.message(Cmd("инфо", "info"), F.chat.type == "private")
     async def cmd_info_private_fallback(message: Message):
         return await message.answer(
             "В личке /инфо и /info доступны только внутри анонимного чата (по приглашению)."
         )
 
-    @router.message(Command("чеки_сегодня", "cheki_segodnya"), F.chat.type == "private", arf)
+    @router.message(Cmd("чеки_сегодня", "cheki_segodnya"), F.chat.type == "private", arf)
     async def get_anonymous_all_today_receipts(message: Message):
         if not message.from_user:
             return
@@ -944,27 +979,27 @@ def register_anonymous_handlers(
             except Exception:
                 pass
 
-    @router.message(Command("чеки_сегодня", "cheki_segodnya"), F.chat.type == "private")
+    @router.message(Cmd("чеки_сегодня", "cheki_segodnya"), F.chat.type == "private")
     async def cmd_cheki_private_fallback(message: Message):
         return await message.answer(
             "В личке /чеки_сегодня и /cheki_segodnya доступны только внутри анонимного чата (по приглашению)."
         )
 
-    @router.message(Command("помощь"), F.chat.type == "private", arf)
+    @router.message(Cmd("помощь"), F.chat.type == "private", arf)
     async def cmd_anonymous_help(message: Message):
         if not message.from_user:
             return
         if not resolve_anonymous_room_for_dm(message.from_user.id, child_room_id):
             return
-        await message.answer(_ANONYMOUS_HELP_TEXT)
+        await message.answer(ui.ANON_HELP_HTML, parse_mode="HTML")
 
-    @router.message(Command("помощь"), F.chat.type == "private")
+    @router.message(Cmd("помощь"), F.chat.type == "private")
     async def cmd_help_private_fallback(message: Message):
         return await message.answer(
             "В личке /помощь доступна только внутри анонимного чата (по приглашению)."
         )
 
-    @router.message(Command("delete"), F.chat.type == "private", arf)
+    @router.message(Cmd("delete"), F.chat.type == "private", arf)
     async def cmd_delete_anon(message: Message):
         if not message.from_user:
             return
@@ -999,7 +1034,7 @@ def register_anonymous_handlers(
             f"Готово. У собеседников: {ok}/{len(pairs)}. У вас: {ok_me}/{len(seen_src)}."
         )
 
-    @router.message(Command("delete_all"), F.chat.type == "private", arf)
+    @router.message(Cmd("delete_all"), F.chat.type == "private", arf)
     async def cmd_delete_all_anon(message: Message):
         if not message.from_user or not message.text:
             return
@@ -1044,7 +1079,7 @@ def register_anonymous_handlers(
 
     if include_private_catchall:
 
-        @router.message(CommandStart(), F.chat.type == "private")
+        @router.message(CmdStart(), F.chat.type == "private")
         async def cmd_start_child_plain(message: Message):
             if not message.from_user:
                 return

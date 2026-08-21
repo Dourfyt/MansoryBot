@@ -13,6 +13,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from bot.anonymous_bot_commands import setup_anonymous_private_bot_commands
 from bot.anonymous_chat import list_active_child_bot_tokens
 from bot.anonymous_relay_handlers import register_anonymous_handlers
+from bot.config import ANONYMOUS_CHATS_ENABLED
 from bot.pg import init_schema
 
 logging.basicConfig(
@@ -104,6 +105,12 @@ async def _sync_children(active: Dict[int, ChildBotHandle]) -> None:
 
 
 async def main() -> None:
+    if not ANONYMOUS_CHATS_ENABLED:
+        logger.info(
+            "Анонимные чаты отключены (ANONYMOUS_CHATS_ENABLED=false). "
+            "Супервизор дочерних ботов не запускается."
+        )
+        return
     init_schema()
     active: Dict[int, ChildBotHandle] = {}
     stop = asyncio.Event()

@@ -1,6 +1,6 @@
-# Balenciaga Bot Admin Panel
+# Mansory Bot Admin Panel
 
-Админ-панель для управления связями групп Telegram бота Balenciaga с безопасной авторизацией через Telegram Web App.
+Админ-панель для управления связями групп Telegram бота Mansory с безопасной авторизацией через Telegram Web App.
 
 ## 🔐 Безопасная авторизация
 
@@ -22,7 +22,7 @@ from telegram.ext import CommandHandler
 
 async def admin_command(update, context):
     await update.message.reply_text(
-        "Админ-панель Balenciaga Bot",
+        "Админ-панель Mansory Bot",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton(
                 "Открыть админ-панель",
@@ -61,7 +61,7 @@ async def admin_command(update, context):
         return
     
     await update.message.reply_text(
-        "Админ-панель Balenciaga Bot",
+        "Админ-панель Mansory Bot",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton(
                 "Открыть админ-панель",
@@ -84,14 +84,14 @@ async def admin_command(update, context):
 
 1. **Скопируйте файлы на сервер:**
 ```bash
-scp -r admin-app/* user@your-server:/tmp/balenciaga-admin/
+scp -r admin-app/* user@your-server:/tmp/mansory-admin/
 ```
 
 2. **Подключитесь к серверу и запустите деплой:**
 ```bash
 ssh user@your-server
-sudo mv /tmp/balenciaga-admin /opt/
-cd /opt/balenciaga-admin
+sudo mv /tmp/mansory-admin /opt/
+cd /opt/mansory-admin
 sudo chmod +x deploy.sh
 sudo ./deploy.sh
 ```
@@ -106,11 +106,11 @@ rsync -av --exclude='node_modules' \
          --exclude='.env.local' \
          --exclude='.env.development' \
          --exclude='logs' \
-         admin-app/ user@your-server:/opt/balenciaga-admin/
+         admin-app/ user@your-server:/opt/mansory-admin/
 
 # Затем на сервере:
 ssh user@your-server
-cd /opt/balenciaga-admin
+cd /opt/mansory-admin
 sudo chmod +x deploy.sh
 sudo ./deploy.sh
 ```
@@ -134,7 +134,7 @@ const ADMINS = [1234746517, 7606256823, 7756719528];
 После изменения конфигурации перезапустите приложение:
 
 ```bash
-sudo systemctl restart balenciaga-admin
+sudo systemctl restart mansory-admin
 ```
 
 ## 🔒 Безопасность
@@ -189,11 +189,11 @@ sudo systemctl restart balenciaga-admin
 
 ```bash
 # Просмотр логов приложения
-sudo journalctl -u balenciaga-admin -f
+sudo journalctl -u mansory-admin -f
 
 # Проверка статуса сервисов
 sudo systemctl status nginx
-sudo systemctl status balenciaga-admin
+sudo systemctl status mansory-admin
 ```
 
 ## 🌐 Доступ
@@ -226,4 +226,4 @@ sudo ./manage.sh backup
 
 ## 📝 Лицензия
 
-Этот проект разработан для внутреннего использования администраторами Balenciaga Bot.
+Этот проект разработан для внутреннего использования администраторами Mansory Bot.

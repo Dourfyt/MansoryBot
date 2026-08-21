@@ -5,8 +5,10 @@
 # Запуск:
 #   docker compose up -d --build
 #
-# Сервис anon-child поднимает polling для дочерних ботов (токены из CRM), сам опрашивает БД
-# каждые ANONYMOUS_CHILD_POLL_INTERVAL секунд (по умолчанию 15).
+# Анонимные чаты временно отключены (ANONYMOUS_CHATS_ENABLED=false). Чтобы включить:
+#   1) ANONYMOUS_CHATS_ENABLED=true в .env для bot/admin
+#   2) docker compose --profile anonymous up -d
+# Сервис anon-child: polling дочерних ботов, опрос БД каждые ANONYMOUS_CHILD_POLL_INTERVAL с (по умолчанию 15).
 #
 # Тесты (нужен поднятый postgres; в .env для сети Docker задайте DATABASE_URL с хостом postgres):
 #   docker compose up -d postgres
@@ -22,18 +24,18 @@ services:
   postgres:
     image: postgres:15-alpine
     # Важно: при POSTGRES_USER≠postgres роль «postgres» в кластере не создаётся.
-    # Любые клиенты (GUI, psql) должны подключаться как balenciaga_admin + POSTGRES_PASSWORD ниже.
+    # Любые клиенты (GUI, psql) должны подключаться как mansory_admin + POSTGRES_PASSWORD ниже.
     environment:
       TZ: ${TZ:-Europe/Moscow}
-      POSTGRES_USER: balenciaga_admin
-      POSTGRES_PASSWORD: qVTIRNJLkQ5AncBekL6UiT2p2AF7wftE2wKNqmsximoA
+      POSTGRES_USER: mansory_admin
+      POSTGRES_PASSWORD: cxoEmYHd5c5FYWT6hMoDezrNaUPDQBebDIG3CjBeCtBbNcCjSnQAmugnjNLdzqig
       POSTGRES_DB: crm
     ports:
       - "5432:5432"
     volumes:
       - crm_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U balenciaga_admin -d crm"]
+      test: ["CMD-SHELL", "pg_isready -U mansory_admin -d crm"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -52,14 +54,16 @@ services:
       TZ: ${TZ:-Europe/Moscow}
       BROADCAST_SERVER_HOST: "0.0.0.0"
       BROADCAST_SERVER_PORT: "8765"
-      DATABASE_URL: postgresql://balenciaga_admin:qVTIRNJLkQ5AncBekL6UiT2p2AF7wftE2wKNqmsximoA@postgres:5432/crm
+      ANONYMOUS_CHATS_ENABLED: ${ANONYMOUS_CHATS_ENABLED:-false}
+      DATABASE_URL: postgresql://mansory_admin:cxoEmYHd5c5FYWT6hMoDezrNaUPDQBebDIG3CjBeCtBbNcCjSnQAmugnjNLdzqig@postgres:5432/crm
     volumes:
       - bot_logs:/app/logs
     ports:
       - "8765:8765"
 
-  # Дочерние боты анонимных чатов (токены из CRM). Сам подхватывает новые/смену токена из БД.
+  # Дочерние боты анонимных чатов (токены из CRM). Профиль anonymous — только при включённой фиче.
   anon-child:
+    profiles: [anonymous]
     build:
       context: .
       dockerfile: Dockerfile
@@ -74,7 +78,8 @@ services:
       - .env
     environment:
       TZ: ${TZ:-Europe/Moscow}
-      DATABASE_URL: postgresql://balenciaga_admin:qVTIRNJLkQ5AncBekL6UiT2p2AF7wftE2wKNqmsximoA@postgres:5432/crm
+      ANONYMOUS_CHATS_ENABLED: ${ANONYMOUS_CHATS_ENABLED:-true}
+      DATABASE_URL: postgresql://mansory_admin:cxoEmYHd5c5FYWT6hMoDezrNaUPDQBebDIG3CjBeCtBbNcCjSnQAmugnjNLdzqig@postgres:5432/crm
       ANONYMOUS_CHILD_POLL_INTERVAL: ${ANONYMOUS_CHILD_POLL_INTERVAL:-15}
       BROADCAST_RELAY_URL: http://bot:8765/broadcast/relay-anonymous-photo-check
 
@@ -93,7 +98,8 @@ services:
     environment:
       TZ: ${TZ:-Europe/Moscow}
       NODE_ENV: production
-      DATABASE_URL: postgresql://balenciaga_admin:qVTIRNJLkQ5AncBekL6UiT2p2AF7wftE2wKNqmsximoA@postgres:5432/crm
+      ANONYMOUS_CHATS_ENABLED: ${ANONYMOUS_CHATS_ENABLED:-false}
+      DATABASE_URL: postgresql://mansory_admin:cxoEmYHd5c5FYWT6hMoDezrNaUPDQBebDIG3CjBeCtBbNcCjSnQAmugnjNLdzqig@postgres:5432/crm
       BOT_BROADCAST_URL: http://bot:8765
     ports:
       - "3000:3000"
@@ -109,7 +115,7 @@ services:
     environment:
       TZ: ${TZ:-Europe/Moscow}
       BOT_TOKEN: "0000000000:TEST_TOKEN_FOR_PYTEST"
-      DATABASE_URL: postgresql://balenciaga_admin:qVTIRNJLkQ5AncBekL6UiT2p2AF7wftE2wKNqmsximoA@postgres:5432/crm
+      DATABASE_URL: postgresql://mansory_admin:cxoEmYHd5c5FYWT6hMoDezrNaUPDQBebDIG3CjBeCtBbNcCjSnQAmugnjNLdzqig@postgres:5432/crm
     depends_on:
       postgres:
         condition: service_healthy

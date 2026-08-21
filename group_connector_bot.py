@@ -4,7 +4,9 @@ import sys
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, Router, F
 from aiogram.exceptions import TelegramMigrateToChat
-from aiogram.filters import Command, CommandStart, BaseFilter, StateFilter
+from aiogram.filters import BaseFilter, StateFilter
+
+from bot.filters_cmd import Cmd, CmdStart
 from aiogram.types import Message, FSInputFile, CallbackQuery
 import tempfile
 import html as html_lib
@@ -23,7 +25,38 @@ import aiohttp
 import ssl
 import json
 
-from bot.loader import dp, initialize_db, with_clean_previous, TRON_PRO_API_KEY, bot
+from bot import ui_copy as ui
+from bot.amount_parse import parse_amount
+from bot.chek_parse import ChekCommandFilter, parse_chek_message
+from bot.stickers import send_paid_sticker
+from bot.tron_ocr import ocr_telegram_photo
+from bot.tron_payout import process_screen_hints_payout, record_tron_payout
+from bot.tron_transaction import (
+    check_wallet_address_in_transaction,
+    extract_amount_from_transaction_data,
+)
+from bot.tronscan_api import fetch_transaction_info
+from bot.tron_message import (
+    find_tron_hashes_and_links,
+    looks_like_tron_payout_message,
+    message_image_file_id,
+    message_tron_content,
+    tron_filter_skip_reason,
+)
+from bot.tron_screen_parse import looks_like_tron_wallet_screen, parse_wallet_screen_text
+from bot.tron_screen_log import log_tron_hints, log_tron_screen
+from bot.ui_copy import format_money
+from bot.custom_emojis import (
+    CONFIRM_RECEIPT_CUSTOM_EMOJI_ID,
+    CROSS_CUSTOM_EMOJI_ID,
+    FAKE_RECEIPT_CUSTOM_EMOJI_ID,
+    MSG_ERR_CUSTOM_EMOJI_ID,
+    MSG_OK_CUSTOM_EMOJI_ID,
+    PAYOUT_OK_CUSTOM_EMOJI_ID,
+    PH_PROHIBITED,
+    STOP_REK_CUSTOM_EMOJI_ID,
+)
+from bot.loader import dp, initialize_db, with_clean_previous, bot
 from bot.pg import (
     migrate_telegram_chat_id,
     upsert_admin_chat_invite_link,
@@ -36,6 +69,7 @@ from bot.pg import (
 )
 from bot.group_queries import (
     get_default_rate_ids,
+    resolve_receipt_rate_ids,
     insert_receipt,
     update_trader_rate,
     delete_receipt,
@@ -58,7 +92,7 @@ from bot.group_queries import (
 )
 from bot.scheduler import setup_scheduler, send_message_optimized
 from bot.group_manager import GroupConnectionManager
-from bot.config import ADMINS as CONFIG_ADMINS
+from bot.config import ADMINS as CONFIG_ADMINS, ANONYMOUS_CHATS_ENABLED, TRON_PAYOUT_ENABLED
 from bot.crm_support import (
     SupportSpamError,
     notify_support_staff_new_ticket_message,
@@ -78,6 +112,7 @@ from bot.anonymous_chat import (
     save_anonymous_verifier_notify_targets,
 )
 from bot.anonymous_relay_handlers import (
+    is_anonymous_private_command,
     relay_anonymous_photo_bytes_to_peers,
     try_anonymous_private_message,
 )
@@ -102,7 +137,7 @@ last_confirmation_time = {}
 ADMINS = list(CONFIG_ADMINS)
 
 # Настройки бота
-BOT_NAME = "Balenciaga Bot"
+BOT_NAME = "Mansory Bot"
 
 
 def _configure_time_locale() -> None:
@@ -249,7 +284,10 @@ async def broadcast_rekvizit_to_linked_chats(
             stats["client_failed"] += 1
         await asyncio.sleep(0.05)
 
-    room_ids = list_anonymous_room_ids_for_verifier_group(verifier_group_id)
+    if ANONYMOUS_CHATS_ENABLED:
+        room_ids = list_anonymous_room_ids_for_verifier_group(verifier_group_id)
+    else:
+        room_ids = []
     for room_id in room_ids:
         members = list_member_telegram_ids_for_room(room_id)
         if not members:
@@ -322,6 +360,9 @@ async def broadcast_stop_rek_replies(verifier_group_id: int) -> Tuple[int, int]:
         await asyncio.sleep(0.05)
 
     for room_id, lst in anon_by_room.items():
+        if not ANONYMOUS_CHATS_ENABLED:
+            fail += len(lst)
+            continue
         child_token = get_child_bot_token(room_id) if room_has_child_bot(room_id) else None
         child_bot: Optional[Bot] = None
         try:
@@ -377,7 +418,17 @@ class VerifierGroupOrAnonymousLinkedFilter(BaseFilter):
             return False
         if group_manager.get_group_role(message.chat.id) == "verifier":
             return True
+        if not ANONYMOUS_CHATS_ENABLED:
+            return False
         return is_verifier_group_linked_to_anonymous_room(message.chat.id)
+
+
+class TronPayoutGroupFilter(BaseFilter):
+    """Хеш/ссылка Tron, текст скрина или фото без / (для OCR)."""
+
+    async def __call__(self, message: Message) -> bool:
+        return looks_like_tron_payout_message(message)
+
 
 # Фильтр для команд, которые должны обрабатываться только в связанных группах  
 class ConnectedGroupFilter(BaseFilter):
@@ -407,8 +458,8 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMINS
 
 
-async def can_broadcast_rek(message: Message) -> bool:
-    """/рек: ADMINS бота или создатель/администратор этой группы в Telegram."""
+async def is_group_telegram_or_bot_admin(message: Message) -> bool:
+    """Админы бота (TELEGRAM_ADMIN_IDS) или создатель/админ группы в Telegram."""
     if not message.from_user or not message.chat:
         return False
     if is_admin(message.from_user.id):
@@ -420,30 +471,24 @@ async def can_broadcast_rek(message: Message) -> bool:
         return member.status in ("creator", "administrator")
     except Exception:
         logging.exception(
-            "can_broadcast_rek: get_chat_member chat=%s user=%s",
+            "is_group_telegram_or_bot_admin: get_chat_member chat=%s user=%s",
             message.chat.id,
             message.from_user.id,
         )
         return False
 
 
-# Кастомные emoji на кнопках под фото чека (Telegram custom emoji id)
-CONFIRM_RECEIPT_CUSTOM_EMOJI_ID = "5870844977914842593"
-FAKE_RECEIPT_CUSTOM_EMOJI_ID = "5805597488316419570"  # «Фейк/Нету» на первом ряду
-# Крестик: подтверждение отмены фейка (❌) и итог «Проверено» после фейка
-CROSS_CUSTOM_EMOJI_ID = "5397841719960022238"
-# Успешное сообщение о фиксации выплаты (/выплата, Tron)
-PAYOUT_OK_CUSTOM_EMOJI_ID = "5350452584119279096"
-# /стопрек: «СТОП» + кастомный знак стоп в тексте предупреждения
-STOP_REK_CUSTOM_EMOJI_ID = "5260293700088511294"
+async def can_broadcast_rek(message: Message) -> bool:
+    """/рек: ADMINS бота или создатель/администратор этой группы в Telegram."""
+    return await is_group_telegram_or_bot_admin(message)
 
 
 def stop_rek_broadcast_kwargs() -> dict:
     """Предупреждение /стопрек для send_message(**kwargs, reply_to_message_id=...)."""
     return Text(
         Bold("СТОП"),
-        CustomEmoji("\u26d4", custom_emoji_id=STOP_REK_CUSTOM_EMOJI_ID),
-        Bold(": по этим реквизитам сейчас не переводите деньги."),
+        CustomEmoji(PH_PROHIBITED, custom_emoji_id=STOP_REK_CUSTOM_EMOJI_ID),
+        Bold(f": {ui.stop_rek_body()}"),
     ).as_kwargs()
 
 
@@ -455,7 +500,7 @@ def _msg_with_custom_prefix(placeholder: str, emoji_id: str, body: str) -> dict:
 
 
 def msg_ok(body: str) -> dict:
-    return _msg_with_custom_prefix("✅", CONFIRM_RECEIPT_CUSTOM_EMOJI_ID, body)
+    return _msg_with_custom_prefix("✅", MSG_OK_CUSTOM_EMOJI_ID, body)
 
 
 def msg_payout_ok(body: str) -> dict:
@@ -463,20 +508,20 @@ def msg_payout_ok(body: str) -> dict:
 
 
 def msg_err(body: str) -> dict:
-    return _msg_with_custom_prefix("❌", CROSS_CUSTOM_EMOJI_ID, body)
+    return _msg_with_custom_prefix("❌", MSG_ERR_CUSTOM_EMOJI_ID, body)
 
 
 def receipt_verification_keyboard(client_group_id: int, photo_message_id: int) -> InlineKeyboardMarkup:
     """Кнопки под фото чека: success — «Подтвердить», danger — «Фейк/Нету» (Telegram Bot API `style`)."""
     builder = InlineKeyboardBuilder()
     builder.button(
-        text="Подтвердить",
+        text=ui.BTN_CONFIRM,
         callback_data=f"confirm_receipt:{client_group_id}:{photo_message_id}",
         style="success",
         icon_custom_emoji_id=CONFIRM_RECEIPT_CUSTOM_EMOJI_ID,
     )
     builder.button(
-        text="Фейк/Нету",
+        text=ui.BTN_FAKE,
         callback_data=f"fake_receipt:{client_group_id}:{photo_message_id}",
         style="danger",
         icon_custom_emoji_id=FAKE_RECEIPT_CUSTOM_EMOJI_ID,
@@ -690,6 +735,8 @@ async def _notify_anonymous_verifier_outcome(
     entities: Optional[Any] = None,
 ) -> None:
     """Уведомление по результату проверки чека: пиры и отправитель — reply на релей с фото /п (дочерний бот в ЛС)."""
+    if not ANONYMOUS_CHATS_ENABLED:
+        return
     from aiogram import Bot as AiogramBot
 
     room_id = get_anonymous_room_id_for_dm_verifier_key(source_group_id, source_message_id)
@@ -792,6 +839,8 @@ async def relay_anonymous_photo_check_from_bytes(
     ключ message_links/callback = этот id; релей в анонимный чат с дочернего бота.
     Иначе — временное фото в ЛС основным (как раньше) и релей основным.
     """
+    if not ANONYMOUS_CHATS_ENABLED:
+        return 0
     from aiogram import Bot as AiogramBot
     from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
     from aiogram.types import BufferedInputFile
@@ -881,7 +930,7 @@ async def relay_anonymous_photo_check_from_bytes(
             bot,
             verifier_group_id,
             buf_ver,
-            caption="Выберите действие:",
+            caption=ui.CAPTION_VERIFY,
             reply_markup=rv_markup,
         )
         message_links[(user_id, link_key)] = (
@@ -950,35 +999,21 @@ async def relay_anonymous_photo_check_from_bytes(
     return link_key
 
 
-@router.message(Command("start"), F.chat.type.in_({"group", "supergroup"}))
+@router.message(Cmd("start"), F.chat.type.in_({"group", "supergroup"}))
 async def start(message: Message):
     """/start только в группах. Личку обрабатывает cmd_start_private ниже."""
     chat_id = message.chat.id
     role = group_manager.get_group_role(chat_id)
     if role == 'client':
-        await message.answer(
-            f"🔗 Я {BOT_NAME}.\n\n"
-            "Доступные команды:\n"
-            "• /п - отправить фото чека (только с фото)\n"
-            "• /инфо - показать статистику\n"
-            "• /помощь - справка\n\n"
-            "💡 Фото чека будет отправлено на проверку."
-        )
+        await message.answer(ui.start_client_html(BOT_NAME), parse_mode="HTML")
     elif role == 'verifier':
-        await message.answer(
-            f"🔗 Я {BOT_NAME}.\n\n"
-            "Доступные команды:\n"
-            "• Кнопки 'Подтвердить' и 'Фейк/Нету' под фото чека\n"
-            "• /чек <сумма> - добавить чек с указанной суммой\n"
-            "• /инфо - показать статистику\n"
-            "• /помощь - справка\n\n"
-        )
+        await message.answer(ui.start_verifier_html(BOT_NAME), parse_mode="HTML")
     else:
         initialize_db(chat_id)
-        await message.answer("Бот запущен!")
+        await message.answer(ui.start_generic_html(), parse_mode="HTML")
 
 # Модифицируем существующий обработчик команды /чек для работы с группами проверяющих
-@router.message(Command("чек"), VerifierGroupOrAnonymousLinkedFilter())
+@router.message(ChekCommandFilter(), VerifierGroupOrAnonymousLinkedFilter())
 async def cmd_check_verifier(message: Message):
     """Обработчик команды /чек в группе проверяющих (роль verifier в connections или привязка из анонимной комнаты)."""
     # Фильтр уже проверил доступ (VerifierGroupOrAnonymousLinkedFilter)
@@ -987,18 +1022,12 @@ async def cmd_check_verifier(message: Message):
     
     try:
         # Проверяем формат команды (должна быть сумма)
-        parts = (message.text or "").split()
-        if len(parts) != 2:
-            await message.answer(**msg_err("Некорректный формат. Используйте: /чек 100.00 или /чек -50.00"))
-            return
-        
-        # Проверяем, что второй параметр - это число
         try:
-            amount = float(parts[1])
+            amount, rate_value, percent_value = parse_chek_message(message.text or "")
         except ValueError:
-            await message.answer(**msg_err("Сумма должна быть числом. Используйте: /чек 100.00 или /чек -50.00"))
+            await message.answer(**msg_err(ui.CHEK_FORMAT_HINT))
             return
-        
+
         logging.info(f"💰 Обрабатываем чек на сумму {amount}")
         
         # Ищем связь между сообщениями для определения исходной группы клиентов
@@ -1043,8 +1072,10 @@ async def cmd_check_verifier(message: Message):
         logging.info(f"✅ Добавляем чек в БД группы проверяющих {message.chat.id}")
         initialize_db(message.chat.id)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        default_rate_id, default_retention_id = get_default_rate_ids(message.chat.id)
-        insert_receipt(message.chat.id, amount, default_rate_id, default_retention_id, timestamp)
+        ex_id, ret_id = resolve_receipt_rate_ids(
+            message.chat.id, rate_value, percent_value
+        )
+        insert_receipt(message.chat.id, amount, ex_id, ret_id, timestamp)
         logging.info(f"✅ Чек на {amount} добавлен в БД группы проверяющих {message.chat.id}")
         
         if should_notify_client and source_group_id:
@@ -1052,24 +1083,28 @@ async def cmd_check_verifier(message: Message):
             if src_role == "client":
                 logging.info(f"✅ Добавляем чек также в БД группы клиентов {source_group_id}")
                 initialize_db(source_group_id)
-                dr2, dret2 = get_default_rate_ids(source_group_id)
-                insert_receipt(source_group_id, amount, dr2, dret2, timestamp)
+                ex2, ret2 = resolve_receipt_rate_ids(
+                    source_group_id, rate_value, percent_value
+                )
+                insert_receipt(source_group_id, amount, ex2, ret2, timestamp)
                 logging.info(f"✅ Чек на {amount} добавлен также в БД группы клиентов {source_group_id}")
             else:
                 logging.info(
                     "Пропуск второй вставки receipts: источник не группа клиентов (анонимный чек в ЛС)"
                 )
-                room_id = get_anonymous_room_id_for_dm_verifier_key(
-                    source_group_id, source_message_id
-                )
-                if room_id is None and (source_group_id, source_message_id) in message_links:
-                    tup = message_links[(source_group_id, source_message_id)]
-                    explicit = (
-                        int(tup[2]) if len(tup) >= 3 and tup[2] is not None else None
+                room_id = None
+                if ANONYMOUS_CHATS_ENABLED:
+                    room_id = get_anonymous_room_id_for_dm_verifier_key(
+                        source_group_id, source_message_id
                     )
-                    room_id = resolve_anonymous_room_for_verifier_group(
-                        message.chat.id, explicit
-                    )
+                    if room_id is None and (source_group_id, source_message_id) in message_links:
+                        tup = message_links[(source_group_id, source_message_id)]
+                        explicit = (
+                            int(tup[2]) if len(tup) >= 3 and tup[2] is not None else None
+                        )
+                        room_id = resolve_anonymous_room_for_verifier_group(
+                            message.chat.id, explicit
+                        )
                 if room_id is not None:
                     rno = insert_anonymous_receipt(room_id, source_group_id, amount)
                     if rno is not None:
@@ -1094,7 +1129,7 @@ async def cmd_check_verifier(message: Message):
         # Подтверждение: группа клиентов с reply на фото; анонимный ЛС — релей в анонимный чат с reply
         if should_notify_client and source_group_id and source_message_id:
             logging.info(f"Пытаемся отправить уведомление источнику {source_group_id}")
-            _p = msg_ok(f"Чек на {amount} добавлен в {timestamp}.")
+            _p = msg_ok(f"Записано: {format_money(amount)} · {timestamp}")
             is_anon_dm = (
                 source_group_id > 0
                 and (source_group_id, source_message_id) in message_links
@@ -1121,7 +1156,7 @@ async def cmd_check_verifier(message: Message):
                 logging.error(f"Ошибка при отправке с reply: {e}")
                 if not is_anon_dm:
                     try:
-                        _p2 = msg_ok(f"Чек на {amount} добавлен в {timestamp}.")
+                        _p2 = msg_ok(f"Записано: {format_money(amount)} · {timestamp}")
                         await safe_send_message(
                             bot,
                             source_group_id,
@@ -1149,7 +1184,7 @@ async def cmd_check_verifier(message: Message):
                             # Создаем новую клавиатуру с кнопкой «Проверено» (кастомная галочка)
                             builder = InlineKeyboardBuilder()
                             builder.button(
-                                text="Проверено",
+                                text=ui.LBL_VERIFIED,
                                 callback_data=f"already_checked:{amount}",
                                 style="success",
                                 icon_custom_emoji_id=CONFIRM_RECEIPT_CUSTOM_EMOJI_ID,
@@ -1160,7 +1195,7 @@ async def cmd_check_verifier(message: Message):
                             await bot.edit_message_caption(
                                 chat_id=target_group_id,
                                 message_id=target_message_id,
-                                caption="Проверено",
+                                caption=ui.LBL_VERIFIED,
                             )
                             await bot.edit_message_reply_markup(
                                 chat_id=target_group_id,
@@ -1182,39 +1217,40 @@ async def cmd_check_verifier(message: Message):
         
         # Показываем соответствующее сообщение
         if should_notify_client:
-            await message.answer(**msg_ok(f"Чек на {amount} добавлен в {timestamp}"))
+            await message.answer(**msg_ok(f"Записано: {format_money(amount)} · {timestamp}"))
         else:
-            await message.answer(**msg_ok(f"Чек на {amount} добавлен в {timestamp}"))
+            await message.answer(**msg_ok(f"Записано: {format_money(amount)} · {timestamp}"))
         
     except Exception as e:
         logging.error(f"Ошибка при обработке команды /чек: {e}")
         await message.answer(**msg_err("Произошла ошибка при обработке чека."))
 
 
-@router.message(Command("чек"), F.chat.type.in_({"group", "supergroup"}))
+@router.message(ChekCommandFilter(), F.chat.type.in_({"group", "supergroup"}))
 async def add_receipt_command(message: Message):
     try:
         chat_id = message.chat.id
         initialize_db(chat_id)
-        parts = (message.text or "").split()
-        if len(parts) != 2:
-            raise ValueError("Неверный формат")
-
-        amount = float(parts[1])
+        amount, rate_value, percent_value = parse_chek_message(message.text or "")
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        dr, dret = get_default_rate_ids(chat_id)
-        insert_receipt(chat_id, amount, dr, dret, timestamp)
+        ex_id, ret_id = resolve_receipt_rate_ids(chat_id, rate_value, percent_value)
+        insert_receipt(chat_id, amount, ex_id, ret_id, timestamp)
 
         sign = "добавлен" if amount > 0 else "удален"
-        return await message.answer(f"Чек на {amount} {sign} в {timestamp}.")
+        extra = ""
+        if rate_value is not None:
+            extra = f" · курс {rate_value} · {percent_value}%"
+        return await message.answer(
+            f"Чек {format_money(amount)} ({sign}){extra} · {timestamp}."
+        )
 
     except (IndexError, ValueError):
-        return await message.answer("Некорректный формат. Используйте: /чек 100.00 или /чек -50.00")
+        return await message.answer(ui.CHEK_FORMAT_HINT)
 
 
 
-@router.message(Command("процент"))
+@router.message(Cmd("процент"))
 async def set_trader_rate(message: Message):
     try:
         chat_id = message.chat.id
@@ -1226,18 +1262,16 @@ async def set_trader_rate(message: Message):
         return await message.answer("Некорректный формат. Используйте: /процент 10")
 
 
-@router.message(Command("дефолт"))
+@router.message(Cmd("дефолт"), F.chat.type.in_({"group", "supergroup"}))
 async def set_chat_defaults(message: Message):
     chat_id = message.chat.id
-    user = message.from_user
-    if not user:
+    if not message.from_user:
         return await message.answer("Ошибка: не удалось определить пользователя.")
-    user_id = user.id
 
-    # Только админ
-    chat_admins = await bot.get_chat_administrators(chat_id)
-    if user_id not in [admin.user.id for admin in chat_admins]:
-        return await message.answer("⛔ Только админ может менять настройки по умолчанию.")
+    if not await is_group_telegram_or_bot_admin(message):
+        return await message.answer(
+            "⛔ /дефолт доступен администраторам бота или администратору/создателю этой беседы."
+        )
 
     try:
         parts = (message.text or "").strip().split()
@@ -1262,18 +1296,16 @@ async def set_chat_defaults(message: Message):
         )
     )
 
-@router.message(Command("удалить_чек"))
+@router.message(Cmd("удалить_чек"), F.chat.type.in_({"group", "supergroup"}))
 async def handle_delete_receipt(message: Message):
     chat_id = message.chat.id
-    user = message.from_user
-    if not user:
+    if not message.from_user:
         return await message.answer("Ошибка: не удалось определить пользователя.")
-    user_id = user.id
 
-    # Проверка прав администратора
-    admins = await bot.get_chat_administrators(chat_id)
-    if user_id not in [admin.user.id for admin in admins]:
-        return await message.answer("⛔ Только админ может удалять чеки.")
+    if not await is_group_telegram_or_bot_admin(message):
+        return await message.answer(
+            "⛔ /удалить_чек доступен администраторам бота или администратору/создателю этой беседы."
+        )
 
     try:
         receipt_id = int((message.text or "").strip().split()[1])
@@ -1288,42 +1320,39 @@ async def handle_delete_receipt(message: Message):
     return await message.answer(**msg_ok(f"Чек №{receipt_id} удалён."))
 
 
-@router.message(Command("выплата"))
+@router.message(Cmd("выплата"), F.chat.type.in_({"group", "supergroup"}))
 async def handle_manual_payout(message: Message):
     chat_id = message.chat.id
-    user = message.from_user
-    if not user:
+    if not message.from_user:
         return await message.answer("Ошибка: не удалось определить пользователя.")
-    user_id = user.id
 
-    # Проверка на админа
-    admins = await bot.get_chat_administrators(chat_id)
-    if user_id not in [admin.user.id for admin in admins]:
-        return await message.answer("⛔ Только админ может фиксировать выплаты.")
+    if not await is_group_telegram_or_bot_admin(message):
+        return await message.answer(
+            "⛔ /выплата доступна администраторам бота или администратору/создателю этой беседы."
+        )
 
     try:
-        payout_amount = float((message.text or "").strip().split()[1])
+        payout_amount = parse_amount((message.text or "").strip().split()[1])
     except (IndexError, ValueError):
         return await message.answer(**msg_err("Укажи сумму выплаты, например: /выплата 1200"))
 
     initialize_db(chat_id)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     insert_payout(chat_id, payout_amount, timestamp)
+    await send_paid_sticker(bot, chat_id)
 
-    return await message.answer(**msg_payout_ok(f"Выплата {payout_amount:.2f} зафиксирована."))
+    return await message.answer(**msg_payout_ok(f"Выплата {format_money(payout_amount)} зафиксирована."))
 
-@router.message(Command("пкп"))
+@router.message(Cmd("пкп"), F.chat.type.in_({"group", "supergroup"}))
 async def assign_rate_and_retention_to_receipt(message: Message):
     chat_id = message.chat.id
-    user = message.from_user
-    if not user:
+    if not message.from_user:
         return await message.answer("Ошибка: не удалось определить пользователя.")
-    user_id = user.id
 
-    # Проверка прав администратора
-    admins = await bot.get_chat_administrators(chat_id)
-    if user_id not in [admin.user.id for admin in admins]:
-        return await message.answer("⛔ Только админ может присваивать курс и процент чеку.")
+    if not await is_group_telegram_or_bot_admin(message):
+        return await message.answer(
+            "⛔ /пкп доступен администраторам бота или администратору/создателю этой беседы."
+        )
 
     try:
         parts = (message.text or "").strip().split()
@@ -1352,56 +1381,22 @@ async def assign_rate_and_retention_to_receipt(message: Message):
         )
     )
 
-@router.message(Command("помощь"))
+@router.message(Cmd("помощь"))
 async def help_command(message: Message):
     chat_id = message.chat.id
     role = group_manager.get_group_role(chat_id)
     
     if role == 'client':
-        # Группа клиентов
-        help_text = (
-            f"🤖 *{BOT_NAME}*\n\n"
-            "📥 /п — Отправить фото чека на проверку\n"
-            "📊 /инфо — Показать статистику\n"
-            "🆘 /помощь — Показать это сообщение\n\n"
-            "💡 *Как использовать:*\n"
-            "1. Отправьте фото чека с командой /п\n"
-            "2. Фото будет отправлено в группу проверяющих\n"
-            "3. После проверки вы получите уведомление"
-        )
+        help_text = ui.help_client_html(BOT_NAME)
     elif role == 'verifier':
-        # Группа проверяющих
-        help_text = (
-            f"🤖 *{BOT_NAME}*\n\n"
-            "📥 /чек `<сумма>` — Добавить чек после подтверждения фото\n"
-            "📊 /инфо — Показать статистику\n"
-            "🆘 /помощь — Показать это сообщение\n\n"
-            "💡 *Как работать:*\n"
-            "1. Нажмите '✅ Подтвердить' под фото чека\n"
-            "2. Введите сумму командой /чек <сумма>\n"
-            "3. Или нажмите '❌ Фейк/Нету' для отклонения"
-        )
+        help_text = ui.help_verifier_html(BOT_NAME)
     else:
-        # Обычная группа (несвязанная)
-        help_text = (
-            "🤖 *Доступные команды:*\n\n"
-            "📥 /чек `<сумма>` — Добавить чек\n"
-            "💸 /выплата (-)`<сумма>` — Зафиксировать выплату *(админ)*\n"
-            "📊 /инфо — Показать последние чеки и баланс\n"
-            "🧾 /чеки\\_сегодня — Показать все чеки за сегодня\n"
-            "⚙️ /дефолт `<курс>` `<процент>` — Установить значения по умолчанию для чата *(админ)*\n"
-            "✅ /присвоить\\_курс\\_проценты `<курс>` `<процент>` `<ID>` — Присвоить курс и процент конкретному чеку *(админ)*\n"
-            "❌ /отвязать\\_курс ID — Отвязать курс от чека *(админ)*\n"
-            "❌ /отвязать\\_процент ID — Отвязать процент от чека *(админ)*\n"
-            "🆘 /помощь — Показать это сообщение\n"
-            "❌ /сброс — Сбросить все данные *(админ)*\n"
-            "❌ /удалить\\_чек ID — Удалить чек *(админ)*"
-        )
-    
-    return await message.answer(help_text, parse_mode="Markdown")
+        help_text = ui.help_general_html()
+
+    return await message.answer(help_text, parse_mode="HTML")
 
 # Управление курсами отключено — используется только /дефолт
-@router.message(Command("курс"))
+@router.message(Cmd("курс"))
 async def show_exchange_rates(message: Message):
     return await message.answer("Команда отключена. Используйте /дефолт <курс> <процент>.")
 
@@ -1439,30 +1434,28 @@ async def delete_rate(callback: types.CallbackQuery):
 
 
 
-# @router.message(Command("присвоить_курс_диапазон"))
+# @router.message(Cmd("присвоить_курс_диапазон"))
 # 
 # async def assign_rate_to_range(message: Message):
 #     return await message.answer("Команда отключена. Используйте /дефолт для установки курса по умолчанию.")
 
 
-# @router.message(Command("присвоить_проценты_диапазон"))
+# @router.message(Cmd("присвоить_проценты_диапазон"))
 # 
 # async def assign_retention_to_range(message: Message):
 #     return await message.answer("Команда отключена. Используйте /дефолт для установки процента по умолчанию.")
 
 
-@router.message(Command("отвязать_курс"))
+@router.message(Cmd("отвязать_курс"), F.chat.type.in_({"group", "supergroup"}))
 async def unassign_rate(message: Message):
     chat_id = message.chat.id
-    user = message.from_user
-    if not user:
+    if not message.from_user:
         return await message.answer("Ошибка: не удалось определить пользователя.")
-    user_id = user.id
 
-    # Проверка на админа
-    chat_admins = await bot.get_chat_administrators(chat_id)
-    if user_id not in [admin.user.id for admin in chat_admins]:
-        return await message.answer("⛔ Только админ может отвязывать курсы.")
+    if not await is_group_telegram_or_bot_admin(message):
+        return await message.answer(
+            "⛔ /отвязать_курс доступен администраторам бота или администратору/создателю этой беседы."
+        )
 
 
     try:
@@ -1483,18 +1476,16 @@ async def unassign_rate(message: Message):
         return await message.answer(**msg_err("Неверный формат. Используйте: /отвязать_курс <номер_чека>"))
 
 
-@router.message(Command("отвязать_процент"))
+@router.message(Cmd("отвязать_процент"), F.chat.type.in_({"group", "supergroup"}))
 async def unassign_retention(message: Message):
     chat_id = message.chat.id
-    user = message.from_user
-    if not user:
+    if not message.from_user:
         return await message.answer("Ошибка: не удалось определить пользователя.")
-    user_id = user.id
 
-    # Проверка на админа
-    chat_admins = await bot.get_chat_administrators(chat_id)
-    if user_id not in [admin.user.id for admin in chat_admins]:
-        return await message.answer("⛔ Только админ может отвязывать проценты.")
+    if not await is_group_telegram_or_bot_admin(message):
+        return await message.answer(
+            "⛔ /отвязать_процент доступен администраторам бота или администратору/создателю этой беседы."
+        )
 
 
     try:
@@ -1528,7 +1519,7 @@ async def handle_assign_rate(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer("Отключено", show_alert=False)
 
 
-@router.message(Command("инфо"), F.chat.type.in_({"group", "supergroup"}))
+@router.message(Cmd("инфо"), F.chat.type.in_({"group", "supergroup"}))
 async def get_last_receipts(message: Message):
     chat_id = message.chat.id
     initialize_db(chat_id)
@@ -1540,7 +1531,7 @@ async def get_last_receipts(message: Message):
     return await message.answer(response, parse_mode="HTML")
 
 
-@router.message(Command("чеки_сегодня"), F.chat.type.in_({"group", "supergroup"}))
+@router.message(Cmd("чеки_сегодня"), F.chat.type.in_({"group", "supergroup"}))
 async def get_all_today_receipts(message: Message):
     chat_id = message.chat.id
     initialize_db(chat_id)
@@ -1557,7 +1548,9 @@ async def get_all_today_receipts(message: Message):
     total_converted = snap["total_converted"]
     total_payout = snap["total_payout"]
 
-    sums_split_str = " | ".join([f"{total_default_amount:.2f}"] + [f"{amt:.2f}" for amt in other_group_amounts])
+    sums_split_str = " | ".join(
+        [format_money(total_default_amount)] + [format_money(amt) for amt in other_group_amounts]
+    )
 
     # Создаем красивую HTML страницу в стиле prototype.html
     html_content = f"""
@@ -1824,11 +1817,11 @@ async def get_all_today_receipts(message: Message):
                         </div>
                         <div class="summary-item">
                             <div class="label">♻️ Оборот за сегодня</div>
-                            <div class="value">{total_converted:.2f}</div>
+                            <div class="value">{format_money(total_converted)}</div>
                         </div>
                         <div class="summary-item">
                             <div class="label">💸 Всего к выплате</div>
-                            <div class="value">{total_payout:.2f}</div>
+                            <div class="value">{format_money(total_payout)}</div>
                         </div>
                     </div>
 
@@ -1869,7 +1862,7 @@ async def get_all_today_receipts(message: Message):
         pass
     return
 
-@router.message(Command("сброс"), F.chat.type.in_({"group", "supergroup"}))
+@router.message(Cmd("сброс"), F.chat.type.in_({"group", "supergroup"}))
 async def reset_data(message: Message):
     chat_id = message.chat.id
     initialize_db(chat_id)
@@ -1880,7 +1873,7 @@ async def reset_data(message: Message):
 
 # ===== ОБРАБОТЧИКИ КОМАНД ДЛЯ СВЯЗЫВАНИЯ ГРУПП =====
 
-@router.message(CommandStart(), ConnectedGroupFilter())
+@router.message(CmdStart(), ConnectedGroupFilter())
 async def cmd_start_connected_group(message: Message):
     """Обработчик команды /start в связанных группах"""
     # Определяем роль группы и показываем соответствующие команды
@@ -1902,7 +1895,7 @@ async def cmd_start_connected_group(message: Message):
             "• /стопрек — предупредить об остановке приема платежей по реквизитам\n\n"
         )
 
-@router.message(CommandStart())
+@router.message(CmdStart())
 async def cmd_start_private(message: Message):
     """Обработчик команды /start в приватных чатах"""
     if message.chat.type != "private":
@@ -1947,10 +1940,9 @@ async def cmd_start_private(message: Message):
     else:
         await message.answer(
             "👋 Здравствуйте! Напишите сообщение в этот чат — оно уйдёт в поддержку, мы ответим здесь.\n\n"
-            "💡 Администраторы настраивают связки групп через команды бота в личке."
         )
 
-@router.message(Command("connect"))
+@router.message(Cmd("connect"))
 async def cmd_connect(message: Message):
     """Обработчик команды /connect для связывания групп"""
     if message.chat.type != "private":
@@ -2036,7 +2028,7 @@ async def cmd_connect(message: Message):
         logging.error(f"Ошибка при связывании групп: {e}")
         await message.answer(**msg_err("Произошла ошибка при связывании групп."))
 
-@router.message(Command("disconnect"))
+@router.message(Cmd("disconnect"))
 async def cmd_disconnect(message: Message):
     """Обработчик команды /disconnect для разрыва связи"""
     if message.chat.type != "private":
@@ -2075,7 +2067,7 @@ async def cmd_disconnect(message: Message):
         logging.error(f"Ошибка при разрыве связи: {e}")
         await message.answer(**msg_err("Произошла ошибка при разрыве связи."))
 
-@router.message(Command("list"))
+@router.message(Cmd("list"))
 async def cmd_list(message: Message):
     """Показать список всех связей"""
     if message.chat.type != "private":
@@ -2117,7 +2109,7 @@ async def cmd_list(message: Message):
     
     await message.answer(response)
 
-@router.message(Command("stats"))
+@router.message(Cmd("stats"))
 async def cmd_stats(message: Message):
     """Показать статистику по связям"""
     if message.chat.type != "private":
@@ -2138,28 +2130,35 @@ async def cmd_stats(message: Message):
     
     await message.answer(response)
 
-@router.message(Command("peer_id"))
+@router.message(Cmd("peer_id"))
 async def cmd_peer_id(message: Message):
     """Показать ID группы и информацию о связях"""
     if message.chat.type == "private":
         await message.answer(**msg_err("Эта команда работает только в группах."))
         return
-    
+
     chat_id = message.chat.id
     chat_title = message.chat.title or "Группа"
-    chat_type = message.chat.type
-    
-    # Получаем информацию о роли и связях
     role = group_manager.get_group_role(chat_id)
-    
-    response = f"📋 Информация о группе:\n\n"
-    response += f"🏷️ Название: {chat_title}\n"
-    response += f"🆔 ID группы: `{chat_id}`\n"
-    response += f"👤 Роль: {role or 'не связана'}\n\n"
-    
-    await message.answer(response, parse_mode="Markdown")
 
-@router.message(Command("update_group_id"))
+    bot_status = "?"
+    try:
+        bot_info = await bot.get_me()
+        member = await bot.get_chat_member(chat_id, bot_info.id)
+        bot_status = str(member.status)
+    except Exception as e:
+        bot_status = f"ошибка: {e}"
+
+    response = (
+        f"📋 Информация о группе:\n\n"
+        f"🏷️ Название: {chat_title}\n"
+        f"🆔 ID группы: `{chat_id}`\n"
+        f"👤 Роль: {role or 'не связана'}\n"
+        f"🤖 Бот в группе: {bot_status}\n\n"
+    )
+    await message.answer(response, parse_mode="HTML")
+
+@router.message(Cmd("update_group_id"))
 async def cmd_update_group_id(message: Message):
     """Обновить ID группы (например, при обновлении до супергруппы)"""
     if message.chat.type != "private":
@@ -2214,7 +2213,7 @@ async def cmd_update_group_id(message: Message):
         await message.answer(**msg_err("Произошла ошибка при обновлении ID группы."))
 
 
-@router.message(Command("help"))
+@router.message(Cmd("help"))
 async def cmd_help(message: Message):
     """Показать справку"""
     if message.chat.type != "private":
@@ -2282,7 +2281,7 @@ async def cmd_help(message: Message):
     
     await message.answer(help_text)
 
-@router.message(Command("п"), GroupRoleFilter("client"))
+@router.message(Cmd("п"), GroupRoleFilter("client"))
 async def cmd_photo_check(message: Message):
     """Обработчик команды /п в группе клиентов"""
     # Фильтр уже проверил роль группы, поэтому сразу приступаем к обработке
@@ -2324,7 +2323,7 @@ async def cmd_photo_check(message: Message):
                 bot,
                 verifier_group_id,
                 message.photo[-1].file_id,
-                caption=f"Выберите действие:",
+                caption=ui.CAPTION_VERIFY,
                 reply_markup=rv_markup,
             )
         except Exception as e:
@@ -2348,7 +2347,7 @@ async def cmd_photo_check(message: Message):
                         bot,
                         verifier_group_id,
                         message.photo[-1].file_id,
-                        caption=f"Выберите действие:",
+                        caption=ui.CAPTION_VERIFY,
                         reply_markup=rv_markup,
                     )
                     logging.warning(
@@ -2402,170 +2401,21 @@ async def cmd_photo_check(message: Message):
         
         # Связи больше не удаляются автоматически - они остаются до перезапуска бота
         
-        await message.answer(**msg_ok("Фото чека отправлено на проверку!"))
+        await message.answer(**msg_ok("Чек отправлен на проверку"))
         
     except Exception as e:
         logging.error(f"Ошибка при пересылке фото: {e}")
         await message.answer(**msg_err("Ошибка при отправке фото."))
 
 async def fetch_tron_transaction_data(hash_value: str) -> Optional[dict]:
-    """Получает данные транзакции Tron по хешу"""
-    try:
-        url = f"https://apilist.tronscanapi.com/api/transaction-info?hash={hash_value}"
-        headers = {
-            "TRON-PRO-API-KEY": TRON_PRO_API_KEY
-        }
-        
-        # Создаем SSL-контекст с отключенной проверкой сертификата
-        # Это необходимо для работы на macOS, где могут быть проблемы с сертификатами
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        
-        connector = aiohttp.TCPConnector(ssl=ssl_context)
-        
-        async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data
-                else:
-                    logging.error(f"Ошибка API: статус {response.status} для хеша {hash_value}")
-                    return None
-    except Exception as e:
-        logging.error(f"Ошибка при запросе транзакции Tron: {e}")
-        return None
-
-def extract_amount_from_transaction_data(data: dict, wallet_address: Optional[str] = None) -> Optional[float]:
-    """Извлекает amount из данных транзакции"""
-    try:
-        # Приоритет 1: transactionBehavior.value - основное значение транзакции
-        if "transactionBehavior" in data and data["transactionBehavior"]:
-            behavior = data["transactionBehavior"]
-            if "value" in behavior:
-                value_str = str(behavior["value"])
-                # Проверяем, есть ли информация о токене для конвертации
-                if "token_info" in behavior and "tokenDecimal" in behavior["token_info"]:
-                    decimals = behavior["token_info"]["tokenDecimal"]
-                    amount = int(value_str) / (10 ** decimals)
-                    return float(amount)
-                # Если decimals нет, пробуем стандартные 6 для USDT
-                amount = int(value_str) / (10 ** 6)
-                return float(amount)
-        
-        # Приоритет 2: TRC20 транзакции через trc20TransferInfo (массив)
-        # Берем максимальный трансфер или трансфер с участием нужного адреса кошелька
-        if "trc20TransferInfo" in data and isinstance(data["trc20TransferInfo"], list) and len(data["trc20TransferInfo"]) > 0:
-            transfers = data["trc20TransferInfo"]
-            max_amount = 0
-            selected_transfer = None
-            
-            # Если указан адрес кошелька, ищем трансфер с его участием
-            if wallet_address:
-                wallet_address = wallet_address.strip().upper()
-                for transfer_info in transfers:
-                    from_addr = transfer_info.get("from_address", "").upper()
-                    to_addr = transfer_info.get("to_address", "").upper()
-                    if from_addr == wallet_address or to_addr == wallet_address:
-                        if "amount_str" in transfer_info and "decimals" in transfer_info:
-                            amount_str = transfer_info["amount_str"]
-                            decimals = transfer_info["decimals"]
-                            amount = int(amount_str) / (10 ** decimals)
-                            if amount > max_amount:
-                                max_amount = amount
-                                selected_transfer = transfer_info
-            
-            # Если не нашли трансфер с участием адреса, берем максимальный
-            if selected_transfer is None:
-                for transfer_info in transfers:
-                    if "amount_str" in transfer_info and "decimals" in transfer_info:
-                        amount_str = transfer_info["amount_str"]
-                        decimals = transfer_info["decimals"]
-                        amount = int(amount_str) / (10 ** decimals)
-                        if amount > max_amount:
-                            max_amount = amount
-                            selected_transfer = transfer_info
-            
-            if selected_transfer and max_amount > 0:
-                return float(max_amount)
-            
-            # Если не нашли максимальный, берем последний (обычно основной идет последним)
-            if transfers:
-                transfer_info = transfers[-1]
-                if "amount_str" in transfer_info and "decimals" in transfer_info:
-                    amount_str = transfer_info["amount_str"]
-                    decimals = transfer_info["decimals"]
-                    amount = int(amount_str) / (10 ** decimals)
-                    return float(amount)
-        
-        # Приоритет 3: TRC20 транзакции через tokenTransferInfo (одиночный)
-        if "tokenTransferInfo" in data and data["tokenTransferInfo"]:
-            transfer_info = data["tokenTransferInfo"]
-            if "amount_str" in transfer_info and "decimals" in transfer_info:
-                amount_str = transfer_info["amount_str"]
-                decimals = transfer_info["decimals"]
-                amount = int(amount_str) / (10 ** decimals)
-                return float(amount)
-        
-        # Приоритет 4: Старый формат через contractData (для TRC10)
-        if "contractData" in data and "amount" in data["contractData"]:
-            amount = data["contractData"]["amount"]
-            # Если amount в минимальных единицах (satoshi-like), конвертируем
-            if "tokenInfo" in data.get("contractData", {}):
-                token_decimal = data["contractData"]["tokenInfo"].get("tokenDecimal", 0)
-                if token_decimal > 0:
-                    amount = amount / (10 ** token_decimal)
-            return float(amount)
-        
-        logging.warning(f"Amount не найден в данных транзакции")
-        return None
-    except Exception as e:
-        logging.error(f"Ошибка при извлечении amount: {e}")
-        return None
-
-def check_wallet_address_in_transaction(data: dict, wallet_address: Optional[str]) -> bool:
-    """Проверяет, присутствует ли адрес кошелька в транзакции (from_address или to_address)"""
-    if not wallet_address:
-        return True  # Если адрес не задан, пропускаем проверку
-    
-    wallet_address = wallet_address.strip().upper()
-    
-    # Проверяем TRC20 транзакции
-    if "tokenTransferInfo" in data and data["tokenTransferInfo"]:
-        transfer_info = data["tokenTransferInfo"]
-        from_addr = transfer_info.get("from_address", "").upper()
-        to_addr = transfer_info.get("to_address", "").upper()
-        if from_addr == wallet_address or to_addr == wallet_address:
-            return True
-    
-    if "trc20TransferInfo" in data and isinstance(data["trc20TransferInfo"], list):
-        for transfer_info in data["trc20TransferInfo"]:
-            from_addr = transfer_info.get("from_address", "").upper()
-            to_addr = transfer_info.get("to_address", "").upper()
-            if from_addr == wallet_address or to_addr == wallet_address:
-                return True
-    
-    # Проверяем ownerAddress и toAddress
-    owner_addr = data.get("ownerAddress", "").upper()
-    to_addr = data.get("toAddress", "").upper()
-    if owner_addr == wallet_address or to_addr == wallet_address:
-        return True
-    
-    # Проверяем contractData
-    if "contractData" in data:
-        contract_data = data["contractData"]
-        owner_addr = contract_data.get("owner_address", "").upper()
-        to_addr = contract_data.get("to_address", "").upper()
-        if owner_addr == wallet_address or to_addr == wallet_address:
-            return True
-    
-    return False
+    """Получает данные транзакции Tron по хешу (TronScan API)."""
+    return await fetch_transaction_info(hash_value)
 
 
 # --- /рек: реквизиты в клиентские группы + анонимные ЛС (до handle_tron_links — порядок важен) ---
 
 
-@router.message(Command("рек"), VerifierGroupOrAnonymousLinkedFilter())
+@router.message(Cmd("рек"), VerifierGroupOrAnonymousLinkedFilter())
 async def cmd_rek(message: Message):
     """Реквизиты в клиентские группы и анонимные ЛС — одним сообщением (несколько строк под /рек). Админы бота или админы группы в Telegram."""
     if not message.chat or not message.text:
@@ -2617,7 +2467,7 @@ async def cmd_rek(message: Message):
         await message.answer(**msg_ok("Реквизиты отправлены."))
 
 
-@router.message(Command("стопрек"), VerifierGroupOrAnonymousLinkedFilter())
+@router.message(Cmd("стопрек"), VerifierGroupOrAnonymousLinkedFilter())
 async def cmd_stop_rek(message: Message):
     """Ответ на последнюю рассылку /рек: не переводить по этим реквизитам."""
     if not message.chat:
@@ -2648,99 +2498,217 @@ async def cmd_stop_rek(message: Message):
         await message.answer(**msg_ok("Готово."))
 
 
-@router.message(F.text, F.chat.type.in_({"group", "supergroup"}))
-async def handle_tron_links(message: Message):
-    """Ссылки TronScan и хеши транзакций — только в группах (не в ЛС: там тикеты поддержки)."""
-    if not message.text:
-        return
-    
-    # Пропускаем команды (сообщения, начинающиеся с /)
-    if message.text.strip().startswith('/'):
-        return
-    
-    hash_values = []
-    
-    # Ищем ссылки на tronscan.org с транзакциями
-    link_pattern = r'https?://(?:www\.)?tronscan\.org/#/transaction/([a-fA-F0-9]{64})'
-    link_matches = re.findall(link_pattern, message.text)
-    hash_values.extend(link_matches)
-    
-    # Ищем хеши транзакций напрямую (64 hex-символа)
-    # Ищем слова, которые состоят только из hex-символов и имеют длину 64
-    hash_pattern = r'\b([a-fA-F0-9]{64})\b'
-    hash_matches = re.findall(hash_pattern, message.text)
-    
-    # Фильтруем найденные хеши, чтобы исключить те, что уже найдены в ссылках
-    for hash_match in hash_matches:
-        if hash_match not in hash_values:
-            hash_values.append(hash_match)
-    
-    if not hash_values:
-        return
-    
-    chat_id = message.chat.id
-    initialize_db(chat_id)
-
+async def _process_tron_hash_list(
+    message: Message,
+    chat_id: int,
+    hash_values: list[str],
+) -> None:
     wallet_address = get_global_wallet_address()
-    
-    # Обрабатываем каждый найденный хеш
     for hash_value in hash_values:
-        logging.info(f"Найден хеш транзакции Tron: {hash_value}")
-        
-        # Получаем данные транзакции
+        logging.info("Tron: хеш %s в чате %s", hash_value[:16], chat_id)
         transaction_data = await fetch_tron_transaction_data(hash_value)
-        
         if transaction_data is None:
+            log_tron_screen(
+                message,
+                "hash_fetch_failed",
+                tx_hash=hash_value[:16] + "…",
+            )
             try:
-                await message.reply(**msg_err("Не удалось получить данные транзакции"))
-            except Exception as e:
-                logging.error(f"Ошибка при отправке сообщения об ошибке: {e}")
-            continue
-        
-        # Проверяем адрес кошелька ДО проверки на повторную обработку
-        if wallet_address:
-            if not check_wallet_address_in_transaction(transaction_data, wallet_address):
-                logging.warning(f"Транзакция {hash_value} не содержит адрес кошелька {wallet_address}")
-                try:
-                    await message.reply(
-                        **msg_err(
-                            f"Транзакция не содержит адрес кошелька {wallet_address}. Транзакция отклонена."
-                        )
+                await message.reply(
+                    **msg_err(
+                        "Не удалось получить транзакцию из TronScan. "
+                        "Проверьте TRON_PRO_API_KEY и что хеш верный."
                     )
-                except Exception as e:
-                    logging.error(f"Ошибка при отправке сообщения: {e}")
-                continue
-        
-        # Извлекаем amount из данных транзакции
+                )
+            except Exception as e:
+                logging.error("Tron reply error: %s", e)
+            continue
+        if wallet_address and not check_wallet_address_in_transaction(
+            transaction_data, wallet_address
+        ):
+            log_tron_screen(
+                message,
+                "hash_wallet_mismatch",
+                tx_hash=hash_value[:16] + "…",
+                wallet=wallet_address[:8] + "…",
+            )
+            try:
+                await message.reply(
+                    **msg_err(
+                        f"Кошелёк {wallet_address} не участвует в этой транзакции "
+                        "(не отправитель и не получатель)."
+                    )
+                )
+            except Exception as e:
+                logging.error("Tron reply error: %s", e)
+            continue
         amount = extract_amount_from_transaction_data(transaction_data, wallet_address)
-        
         if amount is None:
+            log_tron_screen(
+                message,
+                "hash_amount_unreadable",
+                tx_hash=hash_value[:16] + "…",
+            )
             try:
-                await message.reply(**msg_err("Не удалось получить amount из транзакции"))
+                await message.reply(**msg_err("Не удалось прочитать сумму USDT из транзакции."))
             except Exception as e:
-                logging.error(f"Ошибка при отправке сообщения об ошибке: {e}")
+                logging.error("Tron reply error: %s", e)
             continue
-        
-        if is_transaction_hash_processed(hash_value):
-            logging.info(f"Транзакция {hash_value} уже была обработана ранее в другой группе, пропускаем")
+        await record_tron_payout(
+            message,
+            bot,
+            chat_id,
+            amount,
+            hash_value,
+            msg_payout_ok=msg_payout_ok,
+            msg_err=msg_err,
+        )
+
+
+_TRON_PHOTO_UNRECOGNIZED = (
+    "Не удалось обработать как выплату USDT в Tron. "
+    "Нужен скрин из Tron-кошелька или TronScan (USDT, детали перевода) "
+    "либо хеш / ссылка tronscan.org."
+)
+
+
+async def _reply_tron_photo_unrecognized(message: Message, *, log_reason: str) -> None:
+    log_tron_screen(message, "user_notified", reason=log_reason)
+    try:
+        return
+    except Exception as e:
+        log_tron_screen(message, "reply_failed", reason=str(e))
+
+
+@router.message(TronPayoutGroupFilter())
+async def handle_tron_payout(message: Message):
+    """Хеш/ссылка TronScan, текст или фото скрина — сумма только из API."""
+    content = message_tron_content(message)
+    chat_id = message.chat.id
+    image_file_id = message_image_file_id(message)
+    log_tron_screen(
+        message,
+        "handler_enter",
+        has_image=bool(image_file_id),
+        image_kind="photo" if message.photo else ("document" if message.document else None),
+        content_len=len(content),
+        tron_enabled=TRON_PAYOUT_ENABLED,
+    )
+
+    if not TRON_PAYOUT_ENABLED:
+        if find_tron_hashes_and_links(content) or looks_like_tron_wallet_screen(content):
+            log_tron_screen(message, "disabled", reason="tron_payout_flag_off")
             try:
-                await message.reply(f"⚠️ Транзакция {hash_value[:16]}... уже была обработана ранее")
-            except Exception as e:
-                logging.error(f"Ошибка при отправке сообщения: {e}")
-            continue
-        
+                await message.reply(
+                    **msg_err("Обработка Tron отключена (TRON_PAYOUT_ENABLED=false).")
+                )
+            except Exception:
+                pass
+        elif image_file_id:
+            log_tron_screen(message, "disabled", reason="tron_payout_flag_off_image_only")
+        return
+
+    initialize_db(chat_id)
+    hash_values = find_tron_hashes_and_links(content)
+    if hash_values:
+        log_tron_screen(message, "hash_path", hash_count=len(hash_values))
+        await _process_tron_hash_list(message, chat_id, hash_values)
+        return
+
+    screen_text = ""
+    screen_source = ""
+    if content and looks_like_tron_wallet_screen(content):
+        screen_text = content
+        screen_source = "caption"
+    elif image_file_id:
+        ocr_text = await ocr_telegram_photo(
+            bot,
+            image_file_id,
+            chat_id=chat_id,
+            message_id=message.message_id,
+        )
+        if not ocr_text.strip():
+            log_tron_screen(message, "ocr_empty", reason="no_text_recognized")
+            await _reply_tron_photo_unrecognized(message, log_reason="ocr_empty")
+            return
+        else:
+            ocr_hashes = find_tron_hashes_and_links(ocr_text)
+            if ocr_hashes:
+                log_tron_screen(
+                    message,
+                    "hash_path",
+                    hash_count=len(ocr_hashes),
+                    source="ocr",
+                )
+                await _process_tron_hash_list(message, chat_id, ocr_hashes)
+                return
+            if looks_like_tron_wallet_screen(ocr_text):
+                screen_text = ocr_text
+                screen_source = "ocr"
+            else:
+                log_tron_screen(
+                    message,
+                    "ocr_not_wallet_screen",
+                    ocr_chars=len(ocr_text.strip()),
+                    ocr_preview=ocr_text.strip().replace("\n", " ")[:120],
+                )
+                await _reply_tron_photo_unrecognized(
+                    message, log_reason="ocr_not_wallet_screen"
+                )
+                return
+
+    if not screen_text:
+        if image_file_id:
+            log_tron_screen(
+                message,
+                "skip",
+                reason="no_screen_text",
+                has_image=True,
+                had_caption=bool(content),
+            )
+            await _reply_tron_photo_unrecognized(message, log_reason="no_screen_text")
+        elif content and not content.startswith("/"):
+            log_tron_screen(
+                message,
+                "skip",
+                reason="no_screen_text",
+                has_image=False,
+                had_caption=True,
+            )
+        return
+
+    log_tron_screen(message, "screen_text_ok", source=screen_source, chars=len(screen_text))
+
+    hints = parse_wallet_screen_text(screen_text)
+    if not hints:
+        log_tron_screen(
+            message,
+            "parse_failed",
+            reason="wallet_markers_without_fields",
+            source=screen_source,
+        )
         try:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            insert_payout(chat_id, amount, timestamp)
-            mark_transaction_processed(hash_value, amount, chat_id)
-            await message.reply(**msg_payout_ok(f"Выплата добавлена: {amount}"))
-            logging.info(f"Добавлена выплата {amount} для транзакции {hash_value}")
-        except Exception as e:
-            logging.error(f"Ошибка при сохранении выплаты: {e}")
-            try:
-                await message.reply(**msg_err(f"Ошибка при сохранении выплаты: {e}"))
-            except Exception as send_error:
-                logging.error(f"Ошибка при отправке сообщения об ошибке: {send_error}")
+            await message.reply(
+                **msg_err(
+                    "Похоже на скрин выплаты, но не распознаны поля для TronScan. "
+                    "Пришлите хеш или ссылку tronscan.org."
+                )
+            )
+        except Exception as reply_err:
+            log_tron_screen(message, "reply_failed", reason=str(reply_err))
+        return
+
+    log_tron_hints(message, "parse_ok", hints)
+
+    await process_screen_hints_payout(
+        message,
+        bot,
+        chat_id,
+        hints,
+        screen_text=screen_text,
+        msg_payout_ok=msg_payout_ok,
+        msg_err=msg_err,
+    )
 
 @router.callback_query()
 async def handle_callback(callback: CallbackQuery):
@@ -2758,7 +2726,10 @@ async def handle_callback(callback: CallbackQuery):
         
         # Проверяющие: роль в connections или группа привязана только к анонимной комнате
         role = group_manager.get_group_role(callback.message.chat.id)
-        if role != "verifier" and not is_verifier_group_linked_to_anonymous_room(callback.message.chat.id):
+        if role != "verifier" and (
+            not ANONYMOUS_CHATS_ENABLED
+            or not is_verifier_group_linked_to_anonymous_room(callback.message.chat.id)
+        ):
             await callback.answer("❌ Кнопки доступны только в группах проверяющих.", show_alert=True)
             return
             
@@ -2807,9 +2778,8 @@ async def handle_callback(callback: CallbackQuery):
             try:
                 await bot.send_message(
                     chat_id=callback.message.chat.id,
-                    text=f"💰 Введите сумму чека в формате:\n"
-                         f"/чек <сумма>\n\n"
-                         f"Например: /чек 1500.50"
+                    text=ui.prompt_check_amount_html(),
+                    parse_mode="HTML",
                 )
             except Exception as e:
                 logging.error(f"Ошибка при отправке сообщения: {e}")
@@ -2882,7 +2852,7 @@ async def handle_callback(callback: CallbackQuery):
                 # Создаем новую клавиатуру с кнопкой «Проверено»
                 builder = InlineKeyboardBuilder()
                 builder.button(
-                    text="Проверено",
+                    text=ui.LBL_VERIFIED,
                     callback_data="already_checked",
                     style="danger",
                     icon_custom_emoji_id=CROSS_CUSTOM_EMOJI_ID,
@@ -2893,7 +2863,7 @@ async def handle_callback(callback: CallbackQuery):
                 await bot.edit_message_caption(
                     chat_id=callback.message.chat.id,
                     message_id=callback.message.message_id,
-                    caption="Проверено · фейк",
+                    caption=ui.LBL_VERIFIED_FAKE,
                 )
                 await bot.edit_message_reply_markup(
                     chat_id=callback.message.chat.id,
@@ -2976,7 +2946,7 @@ async def handle_callback(callback: CallbackQuery):
                 await bot.edit_message_caption(
                     chat_id=callback.message.chat.id,
                     message_id=callback.message.message_id,
-                    caption="Выберите действие:"
+                    caption=ui.CAPTION_VERIFY
                 )
                 await bot.edit_message_reply_markup(
                     chat_id=callback.message.chat.id,
@@ -2995,7 +2965,10 @@ async def handle_callback(callback: CallbackQuery):
                 # Есть сумма в callback_data
                 amount = float(parts[1])
                 if amount > 0:
-                    await callback.answer(f"✅ Чек на {amount} уже проверен и добавлен в базу данных", show_alert=True)
+                    await callback.answer(
+                        f"✅ Чек на {format_money(amount)} уже проверен и добавлен в базу данных",
+                        show_alert=True,
+                    )
                 else:
                     await callback.answer("✅ Чек уже проверен и добавлен в базу данных", show_alert=True)
             else:
@@ -3012,7 +2985,25 @@ async def private_support_inbox(message: Message):
     """Не-командные сообщения в ЛС от не-админов — тикет в CRM."""
     if not message.from_user:
         return
-    if await try_anonymous_private_message(message, master_mode=True):
+    if TRON_PAYOUT_ENABLED:
+        priv_content = message_tron_content(message)
+        if find_tron_hashes_and_links(priv_content) or (
+            priv_content and looks_like_tron_wallet_screen(priv_content)
+        ):
+            try:
+                await message.answer(
+                    **msg_err(
+                        "Хеш, ссылка TronScan и скрины выплат принимаются "
+                        "<b>только в группе проверяющих</b>, не в личке бота."
+                    )
+                )
+            except Exception:
+                pass
+            return
+    if not ANONYMOUS_CHATS_ENABLED:
+        if message.text and is_anonymous_private_command(message.text):
+            return
+    elif await try_anonymous_private_message(message, master_mode=True):
         return
     if is_admin(message.from_user.id):
         return
@@ -3106,6 +3097,8 @@ async def run_broadcast_server():
 
     async def post_relay_anonymous_photo_check(request: web.Request) -> web.Response:
         """Внутренний relay: байты фото → основной бот → группа проверяющих (дочерние анонимные боты)."""
+        if not ANONYMOUS_CHATS_ENABLED:
+            return web.Response(status=404)
         try:
             data = await request.post()
             user_id_s = data.get("user_id")
@@ -3463,6 +3456,37 @@ async def _watch_bot_token_change(last_token: str) -> None:
             pass
 
 
+def _register_tron_incoming_middleware() -> None:
+    """Лог каждой картинки в группе: дошло ли обновление от Telegram и пройдёт ли Tron-фильтр."""
+
+    @dp.update.outer_middleware()
+    async def tron_incoming_group_images(handler, event, data):
+        from aiogram.types import Message, Update
+
+        msg: Message | None = None
+        if isinstance(event, Update):
+            msg = event.message
+        elif isinstance(event, Message):
+            msg = event
+        if (
+            msg
+            and msg.chat
+            and msg.chat.type in ("group", "supergroup")
+            and message_image_file_id(msg)
+        ):
+            skip = tron_filter_skip_reason(msg)
+            caption = message_tron_content(msg)
+            log_tron_screen(
+                msg,
+                "telegram_delivered",
+                will_route_tron=skip is None,
+                filter_skip=skip,
+                caption_len=len(caption),
+                caption_preview=(caption[:60] + "…") if len(caption) > 60 else caption or None,
+            )
+        return await handler(event, data)
+
+
 async def main():
     from bot.bot_token import resolve_bot_token
     from bot.crm_support import init_crm_schema
@@ -3476,6 +3500,11 @@ async def main():
     group_manager.refresh_broadcast_chats()
     broadcast_task = asyncio.create_task(run_broadcast_server())
     dp.include_router(router)
+    _register_tron_incoming_middleware()
+    from bot.update_log import register_update_logging
+
+    bot_info = await bot.get_me()
+    register_update_logging(dp, bot_id=bot_info.id)
 
     try:
         while True:

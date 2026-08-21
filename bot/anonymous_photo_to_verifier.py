@@ -20,6 +20,7 @@ from bot.anonymous_chat import (
     resolve_anonymous_room_for_dm,
     save_anonymous_verifier_notify_targets,
 )
+from bot import ui_copy as ui
 from bot.anonymous_relay_handlers import _relay_anonymous_to_peers
 
 logger = logging.getLogger(__name__)
@@ -136,7 +137,7 @@ async def handle_anonymous_photo_check_command(
             gcb.bot,
             verifier_group_id,
             message.photo[-1].file_id,
-            caption="Выберите действие:",
+            caption=ui.CAPTION_VERIFY,
             reply_markup=rv_markup,
         )
         gcb.message_links[(message.chat.id, message.message_id)] = (
@@ -151,7 +152,7 @@ async def handle_anonymous_photo_check_command(
                 save_anonymous_verifier_notify_targets(
                     room_id, message.from_user.id, message.message_id, targets
                 )
-        await message.answer("Фото чека отправлено на проверку!")
+        await message.answer(f"{ui.LBL_VERIFIED}: чек ушёл на проверку")
     except Exception as e:
         logger.exception("Ошибка пересылки /п из анонимного чата: %s", e)
         await message.answer(f"Не удалось отправить фото в группу проверяющих: {e}")

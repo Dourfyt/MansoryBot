@@ -15,7 +15,7 @@ export async function POST(request: NextRequest) {
   await query('UPDATE crm_users SET totp_secret = $1, totp_enabled = 0 WHERE id = $2', [secret, uid]);
 
   const otpauth = generateURI({
-    issuer: 'BalenciagaCRM',
+    issuer: 'MansoryCRM',
     label: session.email,
     secret,
   });

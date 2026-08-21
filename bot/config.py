@@ -5,6 +5,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    v = os.environ.get(name, "").strip().lower()
+    if not v:
+        return default
+    return v in ("1", "true", "yes", "on")
+
+
 def _parse_admin_ids(raw: str) -> list:
     out = []
     for part in (raw or "").replace(" ", "").split(","):
@@ -34,6 +41,12 @@ BOT_NAME = os.environ.get("BOT_NAME", "Group Connector Bot")
 # Отображаемое имя мастер-бота (как в Telegram). Пусто → в заголовках /инфо подставляется «Анонимный чат».
 BOT_DISPLAY_NAME = os.environ.get("BOT_DISPLAY_NAME", "").strip()
 BOT_DESCRIPTION = os.environ.get("BOT_DESCRIPTION", "Бот для связывания групп клиентов с группами проверяющих")
+
+# Временное отключение анонимных чатов: ANONYMOUS_CHATS_ENABLED=false (по умолчанию выключено).
+ANONYMOUS_CHATS_ENABLED = _env_bool("ANONYMOUS_CHATS_ENABLED", default=False)
+
+# Выплата по хешу/ссылке Tron: false — бот молча игнорирует ссылки и 64-символьные хеши.
+TRON_PAYOUT_ENABLED = _env_bool("TRON_PAYOUT_ENABLED", default=True)
 
 BOT_COMMANDS = [
     ("start", "Запустить бота"),
